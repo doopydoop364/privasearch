@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-30
+
+Consumes PrivaNet-Core v0.3.0-alpha.4 (Coordinator, PrivaNode and the `@privanet/*` packages) and adds a multi-node measurement. No PrivaSearch behaviour change.
+
+### Changed
+- The `@privanet/*` packages and the Core release used by CI and the release workflow move to `v0.3.0-alpha.4`, which fixes a Coordinator cost that grew with the number of waiting node lanes. CI runs the real-path and public-URL jobs against it.
+
+### Added
+- Measurement experiment 8 in `docs/measurements.md`: four nodes with 16 slots each crawled 3,000 pages at 6,778 pages per minute against 2,303 for one node, with no invalid results and no transport errors (synthetic site, one machine, single run).
+
 ## [0.3.0] - 2026-09-30
 
 The crawler is now usable and measured. Requires PrivaNet-Core v0.3.0-alpha.3 (Coordinator and PrivaNode) and consumes its `@privanet/*` packages from that release's assets.
