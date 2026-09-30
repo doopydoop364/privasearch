@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-30
+
+Licensing release. No behaviour change.
+
+### Added
+- **License: Apache-2.0.** The standard `LICENSE` file and `"license": "Apache-2.0"` in `package.json`; the license text ships in the release distribution. Third-party dependencies keep their own licenses; nothing is relicensed.
+- A test that keeps the license file, the package field and the README statement consistent.
+
+### Changed
+- The `@privanet/*` packages now come from the PrivaNet-Core `v0.3.0-alpha.2` release assets (the first release that carries the Apache-2.0 license text), and CI and the release workflow validate against that Core release. The switch to the public npm registry follows once the packages are published there.
+
 ## [0.2.0] - 2026-09-30
 
 Milestone 2: the real PrivaNet path. Requires PrivaNet-Core v0.3.0-alpha.1 (Coordinator and PrivaNode) and consumes its `@privanet/*` packages from the release assets. Milestone 1 (pipeline against a test double) is included.
