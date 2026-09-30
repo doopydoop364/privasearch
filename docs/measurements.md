@@ -132,6 +132,23 @@ Reading:
 
 Reproduce: `SCALE_SLOTS=16 SCALE_SITE_DELAY_MS=200 SCALE_BATCH=128 SCALE_POLL_MS=100 SCALE_HOST_DELAY_MS=50 node dist/tests/scale-crawl.js 600` (`SCALE_SLOTS` is new).
 
+## Experiment 8: several nodes on PrivaNet-Core v0.3.0-alpha.4 (Core: "Trusted multi-node validation")
+
+The same site (one host, 200 ms per request), 3,000 pages, 256 in flight, per-host delay 0, against Core v0.3.0-alpha.4. One run per row, one 4-CPU machine running the Coordinator, every node, the site and the crawler together, Node 22:
+
+| Configuration | Pages/min | Seconds | Indexed | Invalid results | Transport errors |
+| --- | --- | --- | --- | --- | --- |
+| 1 node, 16 slots | 2,303 | 78.2 | 3,000 | 0 | 0 |
+| 4 nodes, 16 slots each | **6,778** | 26.6 | 3,000 | 0 | 0 |
+
+Reading:
+- Adding nodes adds throughput on the real path: 2.9 times the pages per minute for four times the nodes, with no invalid results and no transport errors. The shortfall from 4 times is the shared machine (nodes, Coordinator, site and crawler compete for 4 CPUs) and the per-node CPU-class reservation, not a lost or duplicated job.
+- The single-node figure matches Experiment 7 (2,103 at 600 pages, 2,134 re-run on alpha.4), so the Core scaling fix in v0.3.0-alpha.4 (one lease waiter woken per node, cached statements) cost nothing at low slot counts.
+- Why it matters here: before that fix, many waiting lanes made the Coordinator's cost per job grow with the number of lanes; this configuration has 64 of them. See PrivaNet-Core `docs/MULTI_NODE_VALIDATION.md`.
+- Limits: a synthetic single-host site, single runs, one machine. Nothing here says how the real web behaves; that stays unmeasured.
+
+Reproduce: `SCALE_NODES=4 SCALE_SLOTS=16 SCALE_SITE_DELAY_MS=200 SCALE_BATCH=256 SCALE_POLL_MS=100 SCALE_HOST_DELAY_MS=0 SCALE_TIMEOUT_MS=600000 node dist/tests/scale-crawl.js 3000`.
+
 ## Where this leaves the pipeline
 
 Each experiment removed one bottleneck and exposed the next: node poll loop (59 to 1,018 pages per minute on default settings), pipelining (batch to continuous), lease pickup latency, application polling (Coordinator CPU 5 times lower), job slots (259 to 2,103 pages per minute per process at 200 ms latency). What is measured is a synthetic local site on one machine. The next honest step is real sites (robots variety, slow and failing hosts, redirects), where the per-host politeness rules and the network, not the platform, should be the limit.
