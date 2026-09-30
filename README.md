@@ -48,6 +48,10 @@ Details: [docs/architecture.md](docs/architecture.md), [docs/integration.md](doc
 - The frontier is the primary politeness limiter; PrivaNet's node limits are defence in depth.
 - No independent security review has been done. Passing tests is not a security claim.
 
+## License
+
+PrivaSearch is licensed under the [Apache License, Version 2.0](LICENSE) (`Apache-2.0`). This covers the code in this repository. Third-party dependencies, including the `@privanet/*` packages and their own dependencies, keep their own licenses; nothing here relicenses them.
+
 ## Development
 
 Node **24.4+**. The PrivaNet packages are installed from the PrivaNet-Core `v0.3.0-alpha.1` release assets (a temporary bridge until they are published to the npm registry; see PrivaNet-Core `docs/PACKAGES.md`).

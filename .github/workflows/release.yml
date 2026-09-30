@@ -49,7 +49,7 @@ jobs:
           v="${RELEASE_TAG#v}"; d="privasearch-$v"
           mkdir -p "$d" out
           cp -r dist/src "$d/dist"
-          cp package.json package-lock.json README.md CHANGELOG.md ROADMAP.md "$d"/
+          cp LICENSE package.json package-lock.json README.md CHANGELOG.md ROADMAP.md "$d"/
           cp -r docs "$d/docs"
           printf 'Run: npm ci --omit=dev && PRIVASEARCH_DB=./var/privasearch.sqlite node dist/main.js\n(Node >= 24.4. Needs a PrivaNet-Core %s Coordinator and node to crawl; see README.)\n' "$PRIVANET_CORE_REF" > "$d/RUNNING.txt"
           tar -czf "out/$d.tar.gz" "$d"

@@ -1,8 +1,9 @@
 {
   "name": "privasearch",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "PrivaSearch: an independent search engine that crawls through PrivaNet.",
+  "license": "Apache-2.0",
   "type": "module",
   "engines": {
     "node": ">=24.4"
