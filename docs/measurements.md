@@ -51,3 +51,24 @@ The "before, default" row is the important one: 59 pages/min is the predicted ca
 Caveats: single runs, one sandbox machine, synthetic local site, one node with one job slot. Ratios are indicative, not benchmarks. The rerun of the 1,000-page table with the fix, and multi-slot nodes, are next.
 
 Reproduce with a PrivaNet-Core checkout: `SCALE_NODE_POLL_MS=1000 SCALE_POLL_MS=100 node dist/tests/scale-crawl.js 300`.
+
+## Experiment 3: continuous pipeline instead of batches (PrivaSearch driver)
+
+After the Core fix, 1,000 pages, 50 hosts, default node poll interval (1000 ms), `pollMs` 100, one run per row.
+
+| Driver | Concurrency | Pages/min | Latency p50 / p95 (ms) | Coordinator CPU s | Node CPU s |
+| --- | --- | --- | --- | --- | --- |
+| batch (`runOnce`) | 8 | 426 | 1,045 / 1,148 | 9.3 | 7.1 |
+| batch (`runOnce`) | 32 | 1,281 | 1,178 / 1,332 | 9.3 | 6.5 |
+| batch (`runOnce`) | 128 | 1,606 | 1,217 / 1,455 | 9.0 | 5.8 |
+| pipeline (`run`) | 8 | 741 | 1,025 / 1,139 | 7.7 | 6.5 |
+| pipeline (`run`) | 32 | **3,404** | 422 / 575 | 6.6 | 5.9 |
+| pipeline (`run`) | 128 | **4,317** | 533 / 1,083 | 7.3 | 5.8 |
+
+Reading:
+- The batch driver made throughput proportional to batch size: each pass waited for its slowest job, the queue at PrivaNet drained empty, and the idle node then paid its 1 s poll interval before the next batch. `Crawler.run` refills a slot the moment one frees, so the queue stays non-empty. At 32 in flight that is 2.7 times the batch driver.
+- At 128 the in-flight count peaks at 50: the frontier allows one in-flight URL per host and this test site has 50 hosts. That is the politeness rule working, not a limit to remove.
+- At concurrency 8 the pipeline is still latency bound (p50 about 1 s): with few jobs queued the node goes idle between jobs and a new job waits for the next idle poll. Throughput is roughly concurrency divided by latency, so lowering pickup latency helps low-concurrency and demand-queue (interactive) crawls. That points at a Core change (a lease that waits for work instead of the node polling), not a PrivaSearch one.
+- Zero invalid results and zero transport errors in every run. Single runs on one sandbox machine.
+
+Reproduce: `SCALE_MODE=pipeline SCALE_BATCH=32 SCALE_NODE_POLL_MS=1000 SCALE_POLL_MS=100 node dist/tests/scale-crawl.js 1000` (`SCALE_MODE=batch` for the old driver).

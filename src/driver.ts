@@ -34,6 +34,34 @@ export class Crawler {
     return summary;
   }
 
+  /**
+   * Continuous pipeline: keeps up to `concurrency` crawls in flight and leases more from the frontier the moment a
+   * slot frees, instead of waiting for a whole batch (runOnce) to finish. A batch-at-a-time loop lets the queue at
+   * PrivaNet drain empty every pass, so an idle node pays its poll interval before each batch; measured, that made
+   * throughput proportional to the batch size. The frontier still allows one in-flight URL per host and enforces
+   * politeness delays, so more concurrency never means more pressure on one site.
+   */
+  async run(options: { concurrency?: number; signal?: AbortSignal; until?: () => boolean; idleMs?: number } = {}): Promise<PassSummary> {
+    const summary: PassSummary = { submitted: 0, outcomes: {}, indexed: 0, duplicates: 0, discovered: 0, invalidResults: 0, transportErrors: 0 };
+    const concurrency = Math.max(1, options.concurrency ?? this.batch); const idleMs = Math.max(1, options.idleMs ?? 25);
+    const active = new Set<Promise<void>>();
+    const nap = (ms: number) => new Promise<void>(resolve => { const timer = setTimeout(resolve, ms); options.signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true }); });
+    while (!options.signal?.aborted && !options.until?.()) {
+      const room = concurrency - active.size;
+      if (room > 0) {
+        this.o.frontier.requeueStale(this.clock());
+        for (const item of this.o.frontier.lease(this.clock(), room)) {
+          const task: Promise<void> = this.crawl(item, summary).finally(() => { active.delete(task); });
+          active.add(task);
+        }
+      }
+      // Wake as soon as any crawl finishes (a slot is free), or after a short nap when nothing is due yet.
+      await Promise.race([...active, nap(idleMs)]);
+    }
+    await Promise.allSettled([...active]); // never abandon a submitted job: its result must be ingested or its key retried
+    return summary;
+  }
+
   private async crawl(item: Leased, summary: PassSummary): Promise<void> {
     summary.submitted++;
     let raw: unknown;

@@ -48,20 +48,29 @@ for (let h = 0; h < hosts; h++) frontier.add(`http://${hostName(h)}/`, { queue: 
 
 const started = performance.now(); const cpu0 = { node: cpuSeconds(rig.pids.node), coordinator: cpuSeconds(rig.pids.coordinator) };
 const totals = { outcomes: {} as Record<string, number>, indexed: 0, duplicates: 0, invalidResults: 0, transportErrors: 0 };
-let idlePasses = 0; let peakNodeRss = 0; let peakCoordRss = 0;
-const deadline = Date.now() + Number(process.env.SCALE_TIMEOUT_MS ?? 20 * 60000);
-while (Date.now() < deadline && documents.count().documents < pages) {
-  const s = await crawler.runOnce();
+let peakNodeRss = 0; let peakCoordRss = 0;
+const deadline = new AbortController(); const timer = setTimeout(() => deadline.abort(), Number(process.env.SCALE_TIMEOUT_MS ?? 20 * 60000));
+const sampler = setInterval(() => { peakNodeRss = Math.max(peakNodeRss, rss(rig.pids.node)); peakCoordRss = Math.max(peakCoordRss, rss(rig.pids.coordinator)); }, 250);
+const mode = process.env.SCALE_MODE ?? 'pipeline'; // pipeline: continuous refill (Crawler.run); batch: one batch at a time (Crawler.runOnce)
+if (mode === 'pipeline') {
+  const s = await crawler.run({ concurrency: Number(process.env.SCALE_BATCH ?? 32), signal: deadline.signal, until: () => documents.count().documents >= pages });
   for (const [k, v] of Object.entries(s.outcomes)) totals.outcomes[k] = (totals.outcomes[k] ?? 0) + (v ?? 0);
-  totals.indexed += s.indexed; totals.duplicates += s.duplicates; totals.invalidResults += s.invalidResults; totals.transportErrors += s.transportErrors;
-  peakNodeRss = Math.max(peakNodeRss, rss(rig.pids.node)); peakCoordRss = Math.max(peakCoordRss, rss(rig.pids.coordinator));
-  if (s.submitted === 0) { idlePasses++; await new Promise(r => setTimeout(r, 25)); if (idlePasses > 4000) break; } else idlePasses = 0;
+  totals.indexed = s.indexed; totals.duplicates = s.duplicates; totals.invalidResults = s.invalidResults; totals.transportErrors = s.transportErrors;
+} else {
+  let idlePasses = 0;
+  while (!deadline.signal.aborted && documents.count().documents < pages) {
+    const s = await crawler.runOnce();
+    for (const [k, v] of Object.entries(s.outcomes)) totals.outcomes[k] = (totals.outcomes[k] ?? 0) + (v ?? 0);
+    totals.indexed += s.indexed; totals.duplicates += s.duplicates; totals.invalidResults += s.invalidResults; totals.transportErrors += s.transportErrors;
+    if (s.submitted === 0) { idlePasses++; await new Promise(r => setTimeout(r, 25)); if (idlePasses > 4000) break; } else idlePasses = 0;
+  }
 }
+clearTimeout(timer); clearInterval(sampler);
 const seconds = (performance.now() - started) / 1000;
 const count = documents.count(); const hit = documents.search('alpine').length;
 const bytes = (path: string) => { try { return statSync(path).size; } catch { return 0; } };
 const report = {
-  target: pages, hosts, perHost, pollMs: Number(process.env.SCALE_POLL_MS ?? 25), batch: Number(process.env.SCALE_BATCH ?? 32), seconds: Math.round(seconds * 10) / 10, pagesPerMinute: Math.round(count.documents / seconds * 60),
+  target: pages, hosts, perHost, mode, pollMs: Number(process.env.SCALE_POLL_MS ?? 25), batch: Number(process.env.SCALE_BATCH ?? 32), seconds: Math.round(seconds * 10) / 10, pagesPerMinute: Math.round(count.documents / seconds * 60),
   fetchesSubmitted: submitted, maxInFlight: inFlightMax, outcomes: totals.outcomes, documents: count, invalidResults: totals.invalidResults, transportErrors: totals.transportErrors,
   latencyMs: { p50: Math.round(pct(latencies, 0.5)), p95: Math.round(pct(latencies, 0.95)), max: Math.round(Math.max(0, ...latencies)) },
   avgResultBytes: submitted ? Math.round(payloadBytes / submitted) : 0, searchHitsForAlpine: hit,
