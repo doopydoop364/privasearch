@@ -1,0 +1,69 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+  # Creates the tag and release from the chosen ref when a tag cannot be pushed directly.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to create, e.g. v0.2.0 (must match package.json version)'
+        required: true
+        type: string
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+  # The PrivaNet-Core release this PrivaSearch release is validated against (Coordinator and PrivaNode).
+  PRIVANET_CORE_REF: v0.3.0-alpha.1
+permissions:
+  contents: read
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      PRIVANET_CORE_DIR: ${{ github.workspace }}/.privanet-core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: doopydoop364/PrivaNet-Core
+          ref: ${{ env.PRIVANET_CORE_REF }}
+          path: .privanet-core
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: npm }
+      - name: Tag must match package.json version
+        run: test "${RELEASE_TAG}" = "v$(node -p "require('./package.json').version")"
+      - name: Build PrivaNet-Core (the black-box Coordinator and node used by the real-path tests)
+        working-directory: .privanet-core
+        run: npm ci && npm run build
+      - run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - name: Tests, including the real path through PrivaNet
+        run: npm test
+      - name: Public URL through the guarded PrivaNode
+        run: node dist/tests/live-url.js https://example.com/ example
+      - name: Stage the distribution
+        run: |
+          v="${RELEASE_TAG#v}"; d="privasearch-$v"
+          mkdir -p "$d" out
+          cp -r dist/src "$d/dist"
+          cp package.json package-lock.json README.md CHANGELOG.md ROADMAP.md "$d"/
+          cp -r docs "$d/docs"
+          printf 'Run: npm ci --omit=dev && PRIVASEARCH_DB=./var/privasearch.sqlite node dist/main.js\n(Node >= 24.4. Needs a PrivaNet-Core %s Coordinator and node to crawl; see README.)\n' "$PRIVANET_CORE_REF" > "$d/RUNNING.txt"
+          tar -czf "out/$d.tar.gz" "$d"
+          (cd out && sha256sum * > SHA256SUMS.txt)
+      - name: Smoke-test the staged distribution
+        run: |
+          d="privasearch-${RELEASE_TAG#v}"; tar -xzf "out/$d.tar.gz" -C /tmp
+          cd "/tmp/$d" && npm ci --omit=dev >/dev/null && node --input-type=module -e "import('./dist/privanet/privanet-transport.js').then(m => { if (typeof m.PrivaNetTransport !== 'function') process.exit(1); }); import('./dist/documents.js')"
+      - name: Release notes and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/changelog-section.mjs "$RELEASE_TAG" > notes.md
+          printf '\nRequires Node.js >= 24.4 and PrivaNet-Core %s. Verify downloads against SHA256SUMS.txt.\n' "$PRIVANET_CORE_REF" >> notes.md
+          prerelease=""; case "$RELEASE_TAG" in *-*) prerelease="--prerelease";; esac
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then target="--target $GITHUB_SHA"; else target="--verify-tag"; fi
+          gh release create "$RELEASE_TAG" out/* --title "PrivaSearch ${RELEASE_TAG#v}" --notes-file notes.md $target $prerelease
