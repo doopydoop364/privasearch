@@ -4,7 +4,9 @@
   "private": true,
   "description": "PrivaSearch: an independent search engine that crawls through PrivaNet.",
   "type": "module",
-  "engines": { "node": ">=24.4" },
+  "engines": {
+    "node": ">=24.4"
+  },
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -13,6 +15,9 @@
     "serve": "node dist/src/main.js"
   },
   "dependencies": {
+    "@privanet/protocol": "https://github.com/doopydoop364/PrivaNet-Core/releases/download/v0.3.0-alpha.1/privanet-protocol-0.3.0-alpha.1.tgz",
+    "@privanet/sdk": "https://github.com/doopydoop364/PrivaNet-Core/releases/download/v0.3.0-alpha.1/privanet-sdk-0.3.0-alpha.1.tgz",
+    "@privanet/shared": "https://github.com/doopydoop364/PrivaNet-Core/releases/download/v0.3.0-alpha.1/privanet-shared-0.3.0-alpha.1.tgz",
     "zod": "^4.6.5"
   },
   "devDependencies": {

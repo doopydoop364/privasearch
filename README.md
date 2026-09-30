@@ -2,34 +2,40 @@
 
 An independent, self-hostable web search engine. PrivaSearch is a **separate application** that consumes [PrivaNet](https://github.com/doopydoop364/PrivaNet-Core): it never fetches pages itself. Every crawl is meant to go **PrivaSearch, PrivaNet SDK, Coordinator, authenticated PrivaNode, fetch capability, validated result**, even on a single machine. PrivaNet-Core contains no PrivaSearch code and this repository contains no PrivaNet internals.
 
-## Status: milestone 1, not a working crawler yet
+## Status: milestone 2, the real PrivaNet path works
 
-**Read this before assuming anything works.**
+**Read this before assuming anything works beyond what is listed.**
 
 | Part | State |
 | --- | --- |
 | Frontier (SQLite): URL admission, per-host politeness, backoff, recrawl, both queues | Implemented and tested |
-| Contract mirror and result validation (untrusted results, all 12 outcomes) | Implemented and tested |
-| Crawl driver: lease, submit, validate, ingest, discover | Implemented and tested **against a test double** |
-| Document store, FTS5 index, ranking, duplicate handling, noindex | Implemented and tested |
+| Result validation against the schemas from `@privanet/protocol` (untrusted results, all 12 outcomes) | Implemented and tested |
+| Crawl driver: lease, submit, validate, ingest, discover | Implemented and tested against the test double **and** the real path |
+| `PrivaNetTransport` (`@privanet/sdk`): credential per queue, idempotent resubmission, error translation | Implemented and tested |
+| Real path: SDK, Coordinator, authenticated PrivaNode, `web.fetch.v1`, validated result, index, search hit | Proven end to end against a **local test site** (`tests/core-e2e.test.ts`, needs a PrivaNet-Core checkout); public-URL proof runs in CI (`live-public-url` job) |
+| Measured crawl on a synthetic local site: 10, 100, 1,000 pages | Measured once, see [docs/measurements.md](docs/measurements.md). Not the public web, not 10,000 |
+| Document store, FTS5 index, ranking (BM25), duplicate handling, noindex | Implemented and tested |
 | Search API (`GET /search?q=`, JSON only) | Implemented and tested; no UI |
-| **Real crawling through PrivaNet** | **Not possible yet.** See below |
-| Parsing beyond PrivaNet's digest, ranking beyond BM25, metasearch, UI | Not started |
+| Parsing beyond PrivaNet's digest, ranking beyond BM25, metasearch, UI, third-party nodes | Not started |
 
-**Why crawling is not real yet.** The `web.fetch.v1` capability (provisional id) does not exist in PrivaNet-Core: its registry has only two diagnostic job types, so a Coordinator would reject the job type. The architecture decision on where such capabilities live (ADR 005 in PrivaNet-Core) is still *proposed*. Separately, `@privanet/sdk` is not published anywhere this repository can install it from. So all crawling here runs through `FakeTransport`, a test double that returns canned results and **never touches the network**. Nothing here has crawled a real page, and the 1,000 / 10,000 / 100,000 page milestones cannot start until the PrivaNet side ships.
+PrivaSearch makes **no HTTP request to a crawled URL itself**. The only way out is `PrivaNetTransport`; `FakeTransport` is the test double and never touches the network. The fetch contract is imported from `@privanet/protocol`; there is no local copy.
+
+Nothing has crawled the public web at scale. The 1,000-page figure is a local, synthetic, single-node measurement that relaxes the node's SSRF policy for the test host only (a node-owner setting that exists solely for local testing).
 
 ## How it fits together
 
 ```text
 frontier (what, when, how politely)  ->  Crawler  ->  FetchTransport  ->  [PrivaNet path]
-      ^                                    |               (real: @privanet/sdk; today: FakeTransport)
+      ^                                    |               (PrivaNetTransport via @privanet/sdk; FakeTransport in unit tests)
       |                                    v
   discovered links  <-  validated result  ->  DocumentStore + FTS5  ->  search API
 ```
 
-- `src/privanet/fetch-contract.ts`: Zod mirror of the fetch capability contract, pinned to the PrivaNet-Core commit it was copied from, with the capability id in one constant.
+- `src/privanet/contract.ts`: re-exports the authoritative schemas from `@privanet/protocol` and holds the capability id in one constant. No copy of the contract.
+- `src/privanet/privanet-transport.ts`: the real transport over `@privanet/sdk`.
 - `src/privanet/transport.ts`: the single port to PrivaNet. The result type is `unknown` on purpose.
 - `src/privanet/fake-transport.ts`: test double only.
+- `tests/core-rig.ts`, `tests/core-e2e.test.ts`, `tests/scale-crawl.ts`, `tests/live-url.ts`: a black-box rig that runs a real Coordinator and PrivaNode from a PrivaNet-Core checkout.
 - `src/url.ts`, `src/frontier.ts`, `src/driver.ts`, `src/documents.ts`, `src/server.ts`.
 
 Details: [docs/architecture.md](docs/architecture.md), [docs/integration.md](docs/integration.md).
@@ -44,7 +50,7 @@ Details: [docs/architecture.md](docs/architecture.md), [docs/integration.md](doc
 
 ## Development
 
-Node **24.4+**.
+Node **24.4+**. The PrivaNet packages are installed from the PrivaNet-Core `v0.3.0-alpha.1` release assets (a temporary bridge until they are published to the npm registry; see PrivaNet-Core `docs/PACKAGES.md`).
 
 ```bash
 npm ci
@@ -54,4 +60,14 @@ npm run lint
 npm run typecheck
 ```
 
-`npm run serve` serves the search API over an existing database (`PRIVASEARCH_DB`, default `./var/privasearch.sqlite`, on `127.0.0.1:4020`). It cannot crawl.
+`npm run serve` serves the search API over an existing database (`PRIVASEARCH_DB`, default `./var/privasearch.sqlite`, on `127.0.0.1:4020`). It cannot crawl by itself.
+
+The real-path tests need a built PrivaNet-Core checkout and permission to listen on `127.0.0.1:80` (PrivaSearch crawls default ports only); without them they are skipped:
+
+```bash
+git clone --branch v0.3.0-alpha.1 https://github.com/doopydoop364/PrivaNet-Core ../PrivaNet-Core && (cd ../PrivaNet-Core && npm ci && npm run build)
+export PRIVANET_CORE_DIR=$PWD/../PrivaNet-Core
+npm test                                        # includes the end-to-end path
+node dist/tests/scale-crawl.js 100              # measured crawl of a synthetic local site
+node dist/tests/live-url.js https://example.com/ example   # one public URL, node SSRF policy unrelaxed
+```

@@ -1,16 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CONTRACT_SOURCE, FETCH_JOB_TYPE, FetchInputSchema, FetchResultSchema, MAX_RESULT_BYTES, OUTCOMES } from '../src/privanet/fetch-contract.js';
+import { FETCH_JOB_TYPE, FETCH_MAX_RESULT_BYTES, FETCH_OUTCOMES, FetchInputSchema, FetchResultSchema, isValidIdempotencyKey } from '../src/privanet/contract.js';
 import { FakeTransport, outcomeResult, pageResult } from '../src/privanet/fake-transport.js';
 import { TransportError } from '../src/privanet/transport.js';
 
-test('the contract is pinned to a Core commit and names the provisional capability in one place', () => {
-  assert.match(CONTRACT_SOURCE, /ffc35e3/); assert.equal(FETCH_JOB_TYPE, 'web.fetch.v1'); assert.equal(OUTCOMES.length, 12);
+test('the contract comes from @privanet/protocol, not a local copy, and the capability id is defined in one place', async () => {
+  const protocol = await import('@privanet/protocol');
+  assert.equal(FetchInputSchema, protocol.FetchInputSchema); assert.equal(FetchResultSchema, protocol.FetchOutputSchema);
+  assert.equal(FETCH_JOB_TYPE, 'web.fetch.v1'); assert.equal(FETCH_OUTCOMES.length, 12); assert.equal(FETCH_MAX_RESULT_BYTES, 28000);
+  assert.ok(Object.keys(protocol.JOB_TYPES).includes(FETCH_JOB_TYPE)); // the installed PrivaNet actually offers it
+  assert.equal(isValidIdempotencyKey('crawl:abc:0'), true); assert.equal(isValidIdempotencyKey('has space'), false); assert.equal(isValidIdempotencyKey('x'.repeat(129)), false);
 });
 
 test('input is strict: no method, headers, cookies, proxy, port or ignore-robots knob can be expressed, and caps have hard bounds', () => {
-  const ok = FetchInputSchema.parse({ url: 'https://example.com/' });
-  assert.deepEqual([ok.mode, ok.maxRedirects, ok.timeoutMs, ok.maxBodyBytes, ok.maxTextBytes, ok.maxLinks], ['DIGEST', 3, 20000, 524288, 10240, 100]);
+  assert.deepEqual(FetchInputSchema.parse({ url: 'https://example.com/' }), { url: 'https://example.com/' }); // caps only ever lower the node's own defaults
   for (const extra of [{ method: 'POST' }, { headers: { Cookie: 'a=b' } }, { proxy: 'http://x' }, { port: 8080 }, { ignoreRobots: true }, { allowPrivate: true }, { followCrossOrigin: true }, { body: 'x' }, { userAgent: 'x' }])
     assert.equal(FetchInputSchema.safeParse({ url: 'https://example.com/', ...extra }).success, false, JSON.stringify(extra));
   for (const over of [{ maxRedirects: 4 }, { timeoutMs: 30001 }, { timeoutMs: 999 }, { maxBodyBytes: 1048577 }, { maxLinks: 101 }, { maxTextBytes: 10241 }, { mode: 'HEAD' }, { url: 'x' }])
@@ -30,7 +33,7 @@ test('results are validated as untrusted: unknown fields, bad enums, oversize pa
   assert.equal(FetchResultSchema.safeParse({ ...good, page: { ...good.page, links: [], linksTruncated: false, evil: 1 } }).success, false);
   assert.equal(FetchResultSchema.safeParse({ ...good, page: { links: Array.from({ length: 101 }, (_, i) => ({ url: `https://example.com/${i}`, nofollow: false })), linksTruncated: false } }).success, false);
   const big = { ...good, page: { text: 'x'.repeat(10240), links: Array.from({ length: 100 }, (_, i) => ({ url: `https://example.com/${'p'.repeat(300)}${i}`, nofollow: false })), linksTruncated: false } };
-  assert.ok(Buffer.byteLength(JSON.stringify(big)) > MAX_RESULT_BYTES); assert.equal(FetchResultSchema.safeParse(big).success, false);
+  assert.ok(Buffer.byteLength(JSON.stringify(big)) > FETCH_MAX_RESULT_BYTES); assert.equal(FetchResultSchema.safeParse(big).success, false);
   assert.equal(FetchResultSchema.safeParse(null).success, false); assert.equal(FetchResultSchema.safeParse('FETCHED').success, false);
 });
 

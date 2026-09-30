@@ -1,8 +1,8 @@
 import { Frontier } from './frontier.js';
 import type { Leased } from './frontier.js';
 import { DocumentStore } from './documents.js';
-import { FetchResultSchema } from './privanet/fetch-contract.js';
-import type { FetchResult } from './privanet/fetch-contract.js';
+import { FetchResultSchema } from './privanet/contract.js';
+import type { FetchResult } from './privanet/contract.js';
 import { TransportError } from './privanet/transport.js';
 import type { FetchTransport } from './privanet/transport.js';
 import { idempotencyKeyFor, parseCrawlUrl } from './url.js';

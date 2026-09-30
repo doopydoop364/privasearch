@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import type { FetchResult } from './privanet/fetch-contract.js';
+import type { FetchResult } from './privanet/contract.js';
 import type { Queue } from './privanet/transport.js';
 import { parseCrawlUrl, urlKey } from './url.js';
 import type { UrlRejection } from './url.js';

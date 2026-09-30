@@ -1,4 +1,4 @@
-export * from './privanet/fetch-contract.js';
+export * from './privanet/contract.js';
 export * from './privanet/transport.js';
 export * from './url.js';
 export * from './frontier.js';

@@ -1,20 +1,35 @@
 # PrivaNet integration
 
-Authoritative contract: `docs/PRIVASEARCH_INTEGRATION.md` and `docs/APPLICATION_BOUNDARY.md` in PrivaNet-Core (mirrored here from commit `ffc35e3`). If they disagree with `src/privanet/fetch-contract.ts`, the PrivaNet documents win and this repository must be updated.
+Authoritative contract: `docs/PRIVASEARCH_INTEGRATION.md`, `docs/APPLICATION_BOUNDARY.md` and `docs/PACKAGES.md` in PrivaNet-Core. The schemas are **imported** from `@privanet/protocol`; nothing is copied here, so a schema change arrives as a package upgrade and shows up as a type error or a failing test.
 
 ## Capability and permissions
 
-- Job type: `web.fetch.v1` (**provisional**; ADR 005 is proposed). Changing it is a one-line edit of `FETCH_JOB_TYPE`.
-- Two PrivaNet application credentials, `privasearch-demand` and `privasearch-public`, each with `allowedJobTypes` limited to the fetch capability. Tokens come from the environment, are never logged, and never enter a job.
-- Nothing user-derived goes into a job: no queries, no identifiers. The idempotency key carries the frontier entry.
+- Job type: `web.fetch.v1` (confirmed by ADR 005). The constant lives in `src/privanet/contract.ts`.
+- Two PrivaNet application credentials, `privasearch-demand` and `privasearch-public`, each with `allowedJobTypes` limited to the fetch capability. Tokens come from the environment, are never logged and never enter a job.
+- **Fetch identity** is registered by the PrivaNet administrator on each application record (`PRIVANET_FETCH_PRODUCT`, `PRIVANET_FETCH_INFO_URL` for the admin script). The Coordinator stamps it into the lease, so the User-Agent and the robots.txt group come from that registration and not from anything PrivaSearch sends in a job. Without it, submission fails with 403 `FETCH_IDENTITY_REQUIRED`.
+- Nothing user-derived goes into a job: no queries, no identifiers. The idempotency key `crawl:<sha256(url)[0:32]>:<generation>` carries the frontier entry.
 
 ## The transport port
 
-`FetchTransport.fetch({ input, idempotencyKey, queue })` returns `unknown`. The real adapter will wrap `@privanet/sdk` (`submit` with the key, then `waitForResult`), pick the credential by queue, and translate SDK errors into `TransportError` codes (`UNAVAILABLE`, `QUEUE_FULL`, `FORBIDDEN`, `JOB_FAILED`, `TIMEOUT`). It is not written because the capability does not exist yet and the SDK cannot be installed here.
+`FetchTransport.fetch({ input, idempotencyKey, queue })` returns `unknown`. `PrivaNetTransport` wraps `@privanet/sdk` (`submit` with the key, then `waitForResult`), picks the credential by queue, and translates errors:
+
+| Cause | `TransportError` | Retry |
+| --- | --- | --- |
+| 429 `QUEUE_LIMIT` | `QUEUE_FULL` | yes, back off |
+| Wait timeout (408) | `TIMEOUT` | yes, same key returns the same job |
+| Job failed inside PrivaNet (409) | `JOB_FAILED` | yes, later |
+| 5xx, network failure | `UNAVAILABLE` | yes |
+| 401/403 (credential, `JOB_TYPE_FORBIDDEN`, `FETCH_IDENTITY_REQUIRED`), other 4xx | `FORBIDDEN` | no: configuration |
+| 426 protocol mismatch, an answer that violates the schema | `INCOMPATIBLE` | no: upgrade the packages |
+
+The SDK validates a job result against the registered output schema before returning it; the driver then validates again and cross-checks it against what was asked, because a schema-valid result can still be dishonest (wrong URL, off-host final URL, impossible status).
+
+## Version mismatch and upgrades
+
+Packages are pinned to an exact version. A Coordinator that speaks a different protocol version answers 426, which surfaces as `INCOMPATIBLE`. Upgrade `@privanet/*` together (see PrivaNet-Core `docs/PACKAGES.md`); the three must share a version.
 
 ## Open items on the PrivaNet side (owned by PrivaNet-Core)
 
-1. The fetch capability itself (guarded fetcher, robots, SSRF boundary, digest) and confirmation of ADR 005.
-2. A way to consume `@privanet/sdk`: options are the pure-JavaScript `node_modules/@privanet/sdk` shipped in a PrivaNet release archive, a `file:` link to a sibling checkout, or publishing PrivaNet's packages to a registry.
-3. Application fetch identity (product token and info URL) so the User-Agent and robots token are per application.
-4. Job cancellation, short retention, and per-host concurrency hints before untrusted nodes.
+1. Publish the packages to the npm registry (needs the `privanet` org and an `NPM_TOKEN`); until then they are installed from release assets.
+2. SDK polling cost: `waitForResult` polls per job; see [measurements.md](measurements.md) for the evidence and the batch or long-poll proposal.
+3. Job cancellation, short retention, and per-host concurrency hints before untrusted nodes.

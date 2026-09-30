@@ -1,5 +1,8 @@
 name: PrivaSearch validation
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
 jobs:
   foundation:
     strategy:
@@ -19,3 +22,52 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+
+  # The real path: a genuine Coordinator and PrivaNode from a PrivaNet-Core release, driven through @privanet/sdk.
+  real-path:
+    runs-on: ubuntu-latest
+    env:
+      PRIVANET_CORE_DIR: ${{ github.workspace }}/.privanet-core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: doopydoop364/PrivaNet-Core
+          ref: v0.3.0-alpha.1
+          path: .privanet-core
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Build PrivaNet-Core (the black-box Coordinator and node)
+        working-directory: .privanet-core
+        run: npm ci && npm run build
+      # PrivaSearch only crawls default ports, so the local test site listens on port 80.
+      - run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
+      - run: npm ci
+      - run: npm test
+      - name: Measured crawl, 100 pages through the real path
+        run: node dist/tests/scale-crawl.js 100
+
+  # One real public URL through the guarded PrivaNode, with the node's default (unrelaxed) SSRF policy.
+  live-public-url:
+    needs: real-path
+    runs-on: ubuntu-latest
+    env:
+      PRIVANET_CORE_DIR: ${{ github.workspace }}/.privanet-core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: doopydoop364/PrivaNet-Core
+          ref: v0.3.0-alpha.1
+          path: .privanet-core
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - working-directory: .privanet-core
+        run: npm ci && npm run build
+      - run: npm ci
+      - run: npm run build
+      - run: node dist/tests/live-url.js https://example.com/ example
