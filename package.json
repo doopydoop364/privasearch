@@ -1,6 +1,6 @@
 {
   "name": "privasearch",
-  "version": "0.0.1",
+  "version": "0.2.0",
   "private": true,
   "description": "PrivaSearch: an independent search engine that crawls through PrivaNet.",
   "type": "module",
