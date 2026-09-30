@@ -1,10 +1,10 @@
 # PrivaSearch roadmap
 
-Status terms: **Done**, **Next**, **Blocked** (needs PrivaNet work), **Planned**.
+Status terms: **Done**, **In progress**, **Next**, **Planned**.
 
-1. **Milestone 1: pipeline against a test double.** Done: contract mirror, URL policy, frontier, driver, document store, FTS5 index, search API.
-2. **Milestone 2: real path.** Blocked on PrivaNet: the fetch capability and an installable SDK. Then: the real transport adapter, one local PrivaNode, a first real crawl.
-3. **Measured milestones.** Planned, on one local node: 1,000, then 10,000, then 100,000 pages, reporting throughput, error rates and what PrivaNet should change.
+1. **Milestone 1: pipeline against a test double.** Done.
+2. **Milestone 2: real PrivaNet path.** Done locally: `@privanet` packages consumed, contract mirror removed, `PrivaNetTransport`, end-to-end test through a real Coordinator and PrivaNode. In progress: the public-URL proof (CI `live-public-url`).
+3. **Measured milestones.** In progress: 10, 100 and 1,000 pages measured on a synthetic local site ([docs/measurements.md](docs/measurements.md)). Next: the same against real public sites, then 10,000 and 100,000, with the PrivaNet changes the measurements justify (SDK polling cost first).
 4. **Crawl quality.** Planned: robots caching for scheduling, sitemaps, crawl-trap and near-duplicate handling, language handling, recrawl tuning.
 5. **Search quality.** Planned: ranking beyond BM25, snippets, a UI.
 6. **Metasearch fallback.** Planned, after the index proves itself.
