@@ -51,7 +51,7 @@ export async function startCore(coreDir: string, options: { identity?: Identity;
   const env: NodeJS.ProcessEnv = { ...process.env, PRIVANET_ADMIN_SECRET: admin, PRIVANET_COORDINATOR_URL: url, PRIVANET_HOST: '127.0.0.1', PRIVANET_PORT: String(port),
     PRIVANET_DATA_DIR: join(dir, 'coordinator'), PRIVANET_LEASE_MS: '30000', PRIVANET_MAINTENANCE_MS: '200', PRIVANET_MAX_PENDING_PER_APP: '100000',
     PRIVANODE_COORDINATOR_URL: url, PRIVANODE_STATE_DIR: join(dir, 'node'), PRIVANODE_ALLOW_INSECURE_LOOPBACK: 'true', PRIVANODE_CAPABILITIES: 'web.fetch.v1',
-    PRIVANODE_POLICY_FILE: policy, PRIVANODE_HEARTBEAT_MS: '1000', PRIVANODE_POLL_MS: '50' };
+    PRIVANODE_POLICY_FILE: policy, PRIVANODE_HEARTBEAT_MS: '1000', PRIVANODE_POLL_MS: process.env.SCALE_NODE_POLL_MS ?? '50' };
   const start = async (script: string, extra: NodeJS.ProcessEnv, event: string) => {
     const child = spawn(process.execPath, [join(coreDir, script)], { cwd: coreDir, env: { ...env, ...extra }, stdio: ['ignore', 'pipe', 'pipe'] });
     children.push(child);

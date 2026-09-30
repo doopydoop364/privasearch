@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+- `npm run crawl`: the crawl command. Wires the real `PrivaNetTransport` and `Crawler.run` to a SQLite database from environment configuration (validated, credentials only from the environment, distinct queue credentials required), seeds from arguments or a file, aggregate-only logs, clean stop on SIGINT or SIGTERM. Tested as a real process against a real Coordinator and PrivaNode.
+- `Crawler.run()`: a continuous pipeline that keeps up to `concurrency` crawls in flight and refills a slot the moment one frees, honours an abort signal and finishes what it already submitted. Measured against the batch driver on the real path: 1,281 to 3,404 pages per minute at 32 in flight. The frontier still allows one in-flight URL per host. `runOnce()` stays for tests and one-shot use.
+
+### Added
+- Measurement experiments (`docs/measurements.md`): SDK polling interval and the node poll loop, which found a Core throughput bug (59 to 1,018 pages per minute on default settings once fixed in PrivaNet-Core). `scale-crawl` accepts `SCALE_POLL_MS`, `SCALE_NODE_POLL_MS`, `SCALE_BATCH`, `SCALE_HOST_DELAY_MS`.
+
 ## [0.2.1] - 2026-09-30
 
 Licensing release. No behaviour change.

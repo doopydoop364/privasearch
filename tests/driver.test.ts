@@ -129,3 +129,33 @@ test('duplicate content under another URL is kept but not indexed; noindex and 4
   r.frontier.add('https://gone.example/', { queue: 'DEMAND' }, r.time.now); await r.crawler.runOnce();
   assert.equal(r.documents.search('stale').length, 0);
 });
+
+test('run(): a continuous pipeline keeps the concurrency bound, refills a slot the moment it frees, and never has one host in flight twice', async () => {
+  const inFlightByHost = new Map<string, number>(); let violations = 0; const startedAt = new Map<string, number>(); const endedAt = new Map<string, number>();
+  const r = rig(async input => {
+    const host = new URL(input.url).hostname; const now = performance.now();
+    inFlightByHost.set(host, (inFlightByHost.get(host) ?? 0) + 1); if ((inFlightByHost.get(host) ?? 0) > 1) violations++;
+    startedAt.set(input.url, now);
+    await new Promise(resolve => setTimeout(resolve, host.startsWith('slow') ? 120 : 5));
+    endedAt.set(input.url, performance.now()); inFlightByHost.set(host, (inFlightByHost.get(host) ?? 1) - 1);
+    return pageResult(input.url, at, { title: input.url });
+  }, { hostDelayMs: 0 });
+  const urls = ['https://slow.example/1', 'https://a.example/1', 'https://b.example/1', 'https://c.example/1', 'https://d.example/1', 'https://e.example/1', 'https://a.example/2', 'https://b.example/2'];
+  for (const url of urls) r.frontier.add(url, { queue: 'PUBLIC' }, r.time.now);
+  const summary = await r.crawler.run({ concurrency: 3, until: () => r.documents.count().documents >= urls.length, idleMs: 2 });
+  assert.equal(summary.submitted, urls.length); assert.equal(r.documents.count().documents, urls.length);
+  assert.ok(r.transport.maxInFlight <= 3, `in flight ${r.transport.maxInFlight}`); assert.equal(violations, 0, 'one host is never in flight twice');
+  // Refill: a batch loop would have started only the first 3 URLs before the slow one finished; the pipeline keeps starting more as the fast slots free.
+  const slowEnd = endedAt.get('https://slow.example/1') ?? 0; const startedWhileSlowRan = urls.filter(u => (startedAt.get(u) ?? Infinity) < slowEnd).length;
+  assert.ok(startedWhileSlowRan >= 6, `only ${startedWhileSlowRan} URLs started while the slow one was running`);
+});
+
+test('run(): stops when told to, finishes what it already submitted, and does not lease more after an abort', async () => {
+  const controller = new AbortController();
+  const r = rig(async input => { await new Promise(resolve => setTimeout(resolve, 10)); if (input.url.endsWith('/3')) controller.abort(); return pageResult(input.url, at, { title: input.url }); }, { hostDelayMs: 0 });
+  for (let i = 1; i <= 40; i++) r.frontier.add(`https://h${i}.example/${i % 5 === 3 ? 3 : 1}`, { queue: 'PUBLIC' }, r.time.now);
+  const summary = await r.crawler.run({ concurrency: 4, signal: controller.signal, idleMs: 2 });
+  assert.ok(summary.submitted < 40, 'aborted before the whole frontier was submitted');
+  assert.equal(r.frontier.stats().IN_FLIGHT, 0, 'nothing is left in flight: every submitted crawl was ingested or released');
+  assert.equal(r.documents.count().documents, summary.indexed + summary.duplicates);
+});

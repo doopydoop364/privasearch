@@ -13,7 +13,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
     "test": "npm run build && node --test \"dist/tests/*.test.js\"",
-    "serve": "node dist/src/main.js"
+    "serve": "node dist/src/main.js",
+    "crawl": "node dist/src/crawl.js"
   },
   "dependencies": {
     "@privanet/protocol": "https://github.com/doopydoop364/PrivaNet-Core/releases/download/v0.3.0-alpha.2/privanet-protocol-0.3.0-alpha.2.tgz",
