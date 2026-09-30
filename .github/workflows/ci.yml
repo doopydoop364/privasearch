@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: doopydoop364/PrivaNet-Core
-          ref: v0.3.0-alpha.4
+          ref: v0.3.0-alpha.5
           path: .privanet-core
       - uses: actions/setup-node@v4
         with:
@@ -60,7 +60,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: doopydoop364/PrivaNet-Core
-          ref: v0.3.0-alpha.4
+          ref: v0.3.0-alpha.5
           path: .privanet-core
       - uses: actions/setup-node@v4
         with:
