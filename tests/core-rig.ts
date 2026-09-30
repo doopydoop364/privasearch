@@ -12,7 +12,7 @@ import { promisify } from 'node:util';
 const exec = promisify(execFile);
 export interface Identity { product: string; infoUrl: string }
 export interface CoreRig {
-  url: string; tokens: { DEMAND: string; PUBLIC: string }; identity: Identity; logs: string[];
+  url: string; pids: { coordinator: number; node: number }; dataDir: string; tokens: { DEMAND: string; PUBLIC: string }; identity: Identity; logs: string[];
   /** Every PrivaNode log line, so metrics such as fetch outcomes can be read back. */
   stop(): Promise<void>;
 }
@@ -63,13 +63,13 @@ export async function startCore(coreDir: string, options: { identity?: Identity;
     await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   };
   try {
-    await start('apps/coordinator/dist/main.js', {}, 'coordinator.started');
+    const coordinator = await start('apps/coordinator/dist/main.js', {}, 'coordinator.started');
     const tool = async (args: string[], extra: NodeJS.ProcessEnv = {}) => JSON.parse((await exec(process.execPath, [join(coreDir, 'scripts/admin.mjs'), ...args], { cwd: coreDir, env: { ...env, ...extra }, timeout: 20000 })).stdout) as { token: string };
     const app = (name: string) => tool(['application', name], { PRIVANET_JOB_TYPES: 'web.fetch.v1', PRIVANET_FETCH_PRODUCT: identity.product, PRIVANET_FETCH_INFO_URL: identity.infoUrl });
     const demand = await app('privasearch-demand'); const pub = await app('privasearch-public');
     const grant = await tool(['enrollment'], { PRIVANET_JOB_TYPES: 'web.fetch.v1' });
-    await start('apps/node/dist/main.js', { PRIVANODE_ENROLLMENT_TOKEN: grant.token }, 'node.enrolled');
-    return { url, tokens: { DEMAND: demand.token, PUBLIC: pub.token }, identity, logs, stop };
+    const node = await start('apps/node/dist/main.js', { PRIVANODE_ENROLLMENT_TOKEN: grant.token }, 'node.enrolled');
+    return { url, pids: { coordinator: coordinator.pid ?? 0, node: node.pid ?? 0 }, dataDir: dir, tokens: { DEMAND: demand.token, PUBLIC: pub.token }, identity, logs, stop };
   } catch (error) { await stop(); throw error; }
 }
 
