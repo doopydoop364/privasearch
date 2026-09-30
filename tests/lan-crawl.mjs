@@ -56,7 +56,8 @@ createServer((req, res) => {
   await sleep(20000); const before = docs(); const tKill = Date.now();
   await lan.stopCoordinator('SIGKILL'); await sleep(6000); await lan.startCoordinator(); const tBack = Date.now();
   let lastDocs = before, afterFirst;
-  while (!exited && Date.now() - started < 600000) { await sleep(1000); const d = docs(); if (afterFirst === undefined && d > before) afterFirst = Date.now(); lastDocs = d; }
+  while (!exited && Date.now() - started < Number(process.env.LAN_TIMEOUT_S ?? 600) * 1000) { await sleep(1000); const d = docs(); if (afterFirst === undefined && d > before) afterFirst = Date.now(); lastDocs = d; }
+  if (process.env.LAN_DEBUG) { const tail = (l) => l.join('').trim().split('\n').slice(-6).join('\n'); console.error('CRAWL LOG\n' + tail(crawlLogs) + '\nDESKTOP NODE\n' + tail(nodeLogs.dsk) + '\nSERVER NODE\n' + tail(nodeLogs.srv) + '\nCOORDINATOR\n' + tail(lan.coordinatorLogs)); }
   const summaryLine = crawlLogs.join('').split('\n').filter(l => l.includes('crawl.stopped')).pop();
   console.log(JSON.stringify({ pagesAvailable: PAGES * HOSTS, documentsIndexedBeforeOutage: before, documentsIndexedAtEnd: lastDocs, outageSeconds: (tBack - tKill) / 1000,
     firstNewDocumentAfterRestartSeconds: afterFirst ? (afterFirst - tBack) / 1000 : null, totalSeconds: (Date.now() - started) / 1000, crawlExited: exited, summary: summaryLine ? JSON.parse(summaryLine) : null,
