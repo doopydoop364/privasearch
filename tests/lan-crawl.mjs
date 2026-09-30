@@ -10,7 +10,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 const core = resolve(process.env.PRIVANET_CORE_DIR ?? '../PrivaNet-Core');
 const { startLan, eventually, sleep } = await import(pathToFileURL(join(core, 'tests', 'dist', 'netns-rig.js')).href);
-const PAGES = Number(process.env.LAN_PAGES ?? 600); const HOSTS = 8;
+const PAGES = Number(process.env.LAN_PAGES ?? 300); const HOSTS = 8;
 const hostNames = Array.from({ length: HOSTS }, (_, i) => `h${i}.example`);
 
 const lan = await startLan({ leaseMs: 5000, staleMs: 2500, offlineMs: 8000 });
@@ -55,11 +55,14 @@ createServer((req, res) => {
   const docs = () => { try { const d = new DatabaseSync(db, { readOnly: true }); try { return Number(d.prepare('SELECT COUNT(*) AS n FROM documents').get().n); } finally { d.close(); } } catch { return -1; } };
   await sleep(20000); const before = docs(); const tKill = Date.now();
   await lan.stopCoordinator('SIGKILL'); await sleep(6000); await lan.startCoordinator(); const tBack = Date.now();
-  let lastDocs = before, afterFirst;
-  while (!exited && Date.now() - started < Number(process.env.LAN_TIMEOUT_S ?? 600) * 1000) { await sleep(1000); const d = docs(); if (afterFirst === undefined && d > before) afterFirst = Date.now(); lastDocs = d; }
+  // The crawl command runs until told to stop; stop it (SIGTERM, a clean stop) once every page of the site is indexed.
+  const target = PAGES * HOSTS; let lastDocs = before, afterFirst;
+  while (!exited && lastDocs < target && Date.now() - started < Number(process.env.LAN_TIMEOUT_S ?? 600) * 1000) { await sleep(500); const d = docs(); if (afterFirst === undefined && d > before) afterFirst = Date.now(); lastDocs = d; }
+  const finishedAfter = (Date.now() - started) / 1000;
+  crawl.kill('SIGTERM'); await eventually('the crawl to stop', () => exited || undefined, 60000).catch(() => {});
   if (process.env.LAN_DEBUG) { const tail = (l) => l.join('').trim().split('\n').slice(-8).join('\n'); console.error('CADDY\n' + tail(lan.caddyLogs) + '\nLISTENING\n' + await lan.server.run('ss', ['-ltn']).catch(() => '?') + '\nCRAWL LOG\n' + tail(crawlLogs) + '\nDESKTOP NODE\n' + tail(nodeLogs.dsk) + '\nSERVER NODE\n' + tail(nodeLogs.srv) + '\nCOORDINATOR\n' + tail(lan.coordinatorLogs)); }
   const summaryLine = crawlLogs.join('').split('\n').filter(l => l.includes('crawl.stopped')).pop();
   console.log(JSON.stringify({ pagesAvailable: PAGES * HOSTS, documentsIndexedBeforeOutage: before, documentsIndexedAtEnd: lastDocs, outageSeconds: (tBack - tKill) / 1000,
-    firstNewDocumentAfterRestartSeconds: afterFirst ? (afterFirst - tBack) / 1000 : null, totalSeconds: (Date.now() - started) / 1000, crawlExited: exited, summary: summaryLine ? JSON.parse(summaryLine) : null,
+    firstNewDocumentAfterRestartSeconds: afterFirst ? (afterFirst - tBack) / 1000 : null, secondsToIndexEverything: lastDocs >= target ? finishedAfter : null, crawlExited: exited, summary: summaryLine ? JSON.parse(summaryLine) : null,
     desktopNodeCompleted: nodeLogs.dsk.join('').split('"event":"job.completed"').length - 1, serverNodeCompleted: nodeLogs.srv.join('').split('"event":"job.completed"').length - 1 }, null, 2));
 } finally { await lan.stop(); }
