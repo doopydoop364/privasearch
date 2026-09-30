@@ -2,11 +2,13 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-30
+
+The crawler is now usable and measured. Requires PrivaNet-Core v0.3.0-alpha.3 (Coordinator and PrivaNode) and consumes its `@privanet/*` packages from that release's assets.
+
 ### Added
 - Measurement experiment 7 (multi-slot nodes) and the `SCALE_SLOTS` knob; the rig raises its node memory ceiling so slot experiments are not memory bound.
 - Measurement experiments 4 to 6 in `docs/measurements.md` (lease that waits for work, one-slot node under simulated network latency, job reads that wait for the result) and `scale-crawl` knobs `SCALE_NODES` (several node processes) and `SCALE_SITE_DELAY_MS` (per-request site latency). The rig can start several PrivaNodes.
-
-### Added
 - `npm run crawl`: the crawl command. Wires the real `PrivaNetTransport` and `Crawler.run` to a SQLite database from environment configuration (validated, credentials only from the environment, distinct queue credentials required), seeds from arguments or a file, aggregate-only logs, clean stop on SIGINT or SIGTERM. Tested as a real process against a real Coordinator and PrivaNode.
 - `Crawler.run()`: a continuous pipeline that keeps up to `concurrency` crawls in flight and refills a slot the moment one frees, honours an abort signal and finishes what it already submitted. Measured against the batch driver on the real path: 1,281 to 3,404 pages per minute at 32 in flight. The frontier still allows one in-flight URL per host. `runOnce()` stays for tests and one-shot use.
 
@@ -34,6 +36,7 @@ Milestone 2: the real PrivaNet path. Requires PrivaNet-Core v0.3.0-alpha.1 (Coor
 - Milestone 2: the real PrivaNet path. `@privanet/protocol`, `@privanet/shared` and `@privanet/sdk` are consumed (from the PrivaNet-Core `v0.3.0-alpha.1` release assets); the contract mirror is removed and the schemas are imported. `PrivaNetTransport` (credential per queue, idempotent resubmission, error translation). Black-box rig and end-to-end test through a real Coordinator and PrivaNode, a measured-crawl script, a one-URL live script, and CI jobs for both.
 
 ### Changed
+- The `@privanet/*` packages and the Core release used by CI and the release workflow move to `v0.3.0-alpha.3`, so PrivaSearch's job waits (one request per job instead of a poll every interval) and the Core throughput fixes it was measured against are what it runs on.
 - `src/privanet/fetch-contract.ts` is replaced by `src/privanet/contract.ts`; `IDEMPOTENCY_KEY` is replaced by `isValidIdempotencyKey`, decided by PrivaNet's own submit schema.
 
 ### Not included
