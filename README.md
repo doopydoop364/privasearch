@@ -16,6 +16,7 @@ An independent, self-hostable web search engine. PrivaSearch is a **separate app
 | Measured crawl on a synthetic local site: 10, 100, 1,000 pages | Measured once, see [docs/measurements.md](docs/measurements.md). Not the public web, not 10,000 |
 | Document store, FTS5 index, ranking (BM25), duplicate handling, noindex | Implemented and tested |
 | Search API (`GET /search?q=`, JSON only) | Implemented and tested; no UI |
+| `npm run crawl`: continuous pipeline through PrivaNet from seeds, clean stop | Implemented and tested end to end against a real Coordinator and node |
 | Parsing beyond PrivaNet's digest, ranking beyond BM25, metasearch, UI, third-party nodes | Not started |
 
 PrivaSearch makes **no HTTP request to a crawled URL itself**. The only way out is `PrivaNetTransport`; `FakeTransport` is the test double and never touches the network. The fetch contract is imported from `@privanet/protocol`; there is no local copy.
@@ -64,7 +65,19 @@ npm run lint
 npm run typecheck
 ```
 
-`npm run serve` serves the search API over an existing database (`PRIVASEARCH_DB`, default `./var/privasearch.sqlite`, on `127.0.0.1:4020`). It cannot crawl by itself.
+`npm run serve` serves the search API over an existing database (`PRIVASEARCH_DB`, default `./var/privasearch.sqlite`, on `127.0.0.1:4020`). It does not crawl.
+
+`npm run crawl` crawls through PrivaNet until stopped (SIGINT or SIGTERM), writing to the same database. It needs a running PrivaNet Coordinator with at least one PrivaNode that offers `web.fetch.v1`, and two application credentials issued by the PrivaNet administrator (one per queue, each with a registered fetch identity):
+
+```bash
+export PRIVANET_COORDINATOR_URL=https://coordinator.example
+export PRIVANET_DEMAND_TOKEN=<64 hex>   # never on the command line
+export PRIVANET_PUBLIC_TOKEN=<64 hex>   # a different credential
+export PRIVASEARCH_SEEDS=./seeds.txt    # optional: one URL per line, # comments; URLs may also be arguments
+npm run crawl -- https://example.com/
+```
+
+Options (environment): `PRIVASEARCH_DB`, `PRIVASEARCH_CONCURRENCY` (default 32, at most one URL per host is ever in flight), `PRIVASEARCH_SEED_QUEUE` (`PUBLIC` default, or `DEMAND`), `PRIVASEARCH_WAIT_TIMEOUT_MS`, `PRIVASEARCH_POLL_MS`, `PRIVASEARCH_ALLOW_INSECURE_LOOPBACK=true` (development only). Logs are aggregate counts: no URL, query or credential is written.
 
 The real-path tests need a built PrivaNet-Core checkout and permission to listen on `127.0.0.1:80` (PrivaSearch crawls default ports only); without them they are skipped:
 

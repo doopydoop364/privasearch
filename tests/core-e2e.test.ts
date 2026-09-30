@@ -1,5 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { Crawler } from '../src/driver.js';
 import { DocumentStore } from '../src/documents.js';
@@ -61,4 +66,29 @@ test('an identity-less application cannot submit web.fetch.v1 and a dead Coordin
   await assert.rejects(dead.fetch({ input: { url: 'https://a.example/' }, idempotencyKey: 'crawl:x:0', queue: 'PUBLIC' }), (e: unknown) => (e as { code?: string }).code === 'UNAVAILABLE');
   const wrong = new PrivaNetTransport({ url: rig.url, tokens: { DEMAND: 'a'.repeat(64), PUBLIC: 'b'.repeat(64) }, allowInsecureLoopback: true });
   await assert.rejects(wrong.fetch({ input: { url: 'https://a.example/' }, idempotencyKey: 'crawl:x:1', queue: 'PUBLIC' }), (e: unknown) => (e as { code?: string }).code === 'FORBIDDEN');
+});
+
+test('the crawl command: real process, real PrivaNet, seeds in, pages indexed, clean SIGTERM stop, and no credential or URL in its logs', { skip, timeout: 90000 }, async t => {
+  const site = await startSite((host, path) => host !== HOST ? undefined
+    : path === '/robots.txt' ? { type: 'text/plain', body: 'User-agent: *\nAllow: /\n' }
+    : path === '/' ? page('Lighthouse index', 'Coastal lighthouses of the north.', ['/a', '/b'])
+    : path === '/a' ? page('Fresnel lens', 'A Fresnel lens focuses lighthouse light.') : path === '/b' ? page('Foghorn', 'A foghorn warns ships.') : undefined);
+  const rig = await startCore(core as string, { hostMap: { [HOST]: '127.0.0.1' } });
+  const dir = await mkdtemp(join(tmpdir(), 'privasearch-crawl-')); const dbPath = join(dir, 'crawl.sqlite');
+  t.after(async () => { await rig.stop(); await site.close(); await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); });
+  const script = fileURLToPath(new URL('../src/crawl.js', import.meta.url)); const logs: string[] = [];
+  const child = spawn(process.execPath, [script, `http://${HOST}/`], { env: { ...process.env, PRIVANET_COORDINATOR_URL: rig.url, PRIVANET_DEMAND_TOKEN: rig.tokens.DEMAND, PRIVANET_PUBLIC_TOKEN: rig.tokens.PUBLIC,
+    PRIVASEARCH_ALLOW_INSECURE_LOOPBACK: 'true', PRIVASEARCH_DB: dbPath, PRIVASEARCH_CONCURRENCY: '4', PRIVASEARCH_POLL_MS: '20' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  child.stdout.on('data', (c: Buffer) => logs.push(c.toString())); child.stderr.on('data', (c: Buffer) => logs.push(c.toString()));
+  const exited = new Promise<number | null>(resolve => child.once('close', code => resolve(code)));
+  const deadline = Date.now() + 30000; let indexed = 0;
+  while (Date.now() < deadline && indexed < 3) {
+    await new Promise(resolve => setTimeout(resolve, 200));
+    try { const db = new DatabaseSync(dbPath, { readOnly: true }); indexed = new DocumentStore(db).count().indexed; db.close(); } catch { /* the crawler has not created the database yet, or holds a write lock: retry */ }
+  }
+  child.kill('SIGTERM'); assert.equal(await exited, 0, 'stops cleanly on SIGTERM'); assert.equal(indexed, 3, 'the seed and both linked pages were indexed');
+  const db = new DatabaseSync(dbPath); t.after(() => db.close());
+  assert.deepEqual(new DocumentStore(db).search('fresnel').map(hit => hit.url), [`http://${HOST}/a`]);
+  const text = logs.join(''); assert.match(text, /"event":"crawl.started"/); assert.match(text, /"event":"crawl.stopped"/);
+  for (const secret of [rig.tokens.DEMAND, rig.tokens.PUBLIC, HOST]) assert.equal(text.includes(secret), false, 'neither credentials nor crawled URLs are logged');
 });

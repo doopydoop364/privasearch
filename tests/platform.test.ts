@@ -15,3 +15,14 @@ test('node:sqlite provides FTS5 with bm25 ranking and snippets on this platform'
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM t WHERE t MATCH ?').get('"cafe"')?.n, 1);
   db.close();
 });
+
+import { parseCrawlConfig } from '../src/crawl-config.js';
+test('crawl configuration fails closed: credentials are validated and distinct, numbers are bounded, seeds come from arguments and a file', () => {
+  const good = { PRIVANET_COORDINATOR_URL: 'https://coordinator.example', PRIVANET_DEMAND_TOKEN: 'a'.repeat(64), PRIVANET_PUBLIC_TOKEN: 'b'.repeat(64) };
+  const ok = parseCrawlConfig(good, ['https://x.example/', '--flag'], '# comment\nhttps://y.example/\n\n  https://z.example/  \n');
+  assert.deepEqual(ok.seeds, ['https://x.example/', 'https://y.example/', 'https://z.example/']); assert.equal(ok.concurrency, 32); assert.equal(ok.seedQueue, 'PUBLIC'); assert.equal(ok.allowInsecureLoopback, false);
+  for (const bad of [{ ...good, PRIVANET_COORDINATOR_URL: undefined }, { ...good, PRIVANET_DEMAND_TOKEN: 'short' }, { ...good, PRIVANET_PUBLIC_TOKEN: undefined }, { ...good, PRIVANET_PUBLIC_TOKEN: good.PRIVANET_DEMAND_TOKEN },
+    { ...good, PRIVASEARCH_CONCURRENCY: '0' }, { ...good, PRIVASEARCH_CONCURRENCY: '100000' }, { ...good, PRIVASEARCH_CONCURRENCY: 'many' }, { ...good, PRIVASEARCH_SEED_QUEUE: 'OTHER' }])
+    assert.throws(() => parseCrawlConfig(bad, []), JSON.stringify(bad));
+  assert.equal(parseCrawlConfig({ ...good, PRIVASEARCH_ALLOW_INSECURE_LOOPBACK: 'true', PRIVASEARCH_SEED_QUEUE: 'DEMAND', PRIVASEARCH_CONCURRENCY: '8' }, []).concurrency, 8);
+});
