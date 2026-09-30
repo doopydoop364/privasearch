@@ -16,9 +16,9 @@
     "serve": "node dist/src/main.js"
   },
   "dependencies": {
-    "@privanet/protocol": "https://github.com/doopydoop364/PrivaNet-Core/releases/download/v0.3.0-alpha.1/privanet-protocol-0.3.0-alpha.1.tgz",
-    "@privanet/sdk": "https://github.com/doopydoop364/PrivaNet-Core/releases/download/v0.3.0-alpha.1/privanet-sdk-0.3.0-alpha.1.tgz",
-    "@privanet/shared": "https://github.com/doopydoop364/PrivaNet-Core/releases/download/v0.3.0-alpha.1/privanet-shared-0.3.0-alpha.1.tgz",
+    "@privanet/protocol": "https://github.com/doopydoop364/PrivaNet-Core/releases/download/v0.3.0-alpha.2/privanet-protocol-0.3.0-alpha.2.tgz",
+    "@privanet/sdk": "https://github.com/doopydoop364/PrivaNet-Core/releases/download/v0.3.0-alpha.2/privanet-sdk-0.3.0-alpha.2.tgz",
+    "@privanet/shared": "https://github.com/doopydoop364/PrivaNet-Core/releases/download/v0.3.0-alpha.2/privanet-shared-0.3.0-alpha.2.tgz",
     "zod": "^4.6.5"
   },
   "devDependencies": {
