@@ -1,5 +1,5 @@
-import { FetchInputSchema, FETCH_JOB_TYPE, IDEMPOTENCY_KEY } from './fetch-contract.js';
-import type { FetchResult } from './fetch-contract.js';
+import { FetchInputSchema, FETCH_JOB_TYPE, isValidIdempotencyKey } from './contract.js';
+import type { FetchResult } from './contract.js';
 import { TransportError } from './transport.js';
 import type { FetchRequest, FetchTransport } from './transport.js';
 
@@ -19,7 +19,7 @@ export class FakeTransport implements FetchTransport {
   constructor(private readonly respond: Responder) {}
   async fetch(request: FetchRequest): Promise<unknown> {
     this.calls.push(request);
-    if (!IDEMPOTENCY_KEY.test(request.idempotencyKey)) throw new TransportError('FORBIDDEN', false);
+    if (!isValidIdempotencyKey(request.idempotencyKey)) throw new TransportError('FORBIDDEN', false);
     const input = FetchInputSchema.parse(request.input); // the Coordinator would reject a malformed input with 400
     const seen = this.byKey.get(request.idempotencyKey); if (seen !== undefined) return seen;
     this.inFlight++; this.maxInFlight = Math.max(this.maxInFlight, this.inFlight);

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { idempotencyKeyFor, parseCrawlUrl, sameOrigin, urlKey } from '../src/url.js';
-import { IDEMPOTENCY_KEY } from '../src/privanet/fetch-contract.js';
+import { isValidIdempotencyKey } from '../src/privanet/contract.js';
 
 const ok = (raw: string, base?: string) => { const p = parseCrawlUrl(raw, base); assert.equal(p.ok, true, `${raw} should be accepted`); return p.ok ? p.url : ''; };
 const bad = (raw: string, reason: string) => { const p = parseCrawlUrl(raw); assert.equal(p.ok, false, `${raw} should be rejected`); assert.equal(p.ok ? '' : p.reason, reason, raw); };
@@ -34,7 +34,7 @@ test('urlKey is stable, canonical urls collapse to one key, and the idempotency 
   const a = ok('https://Example.com/a#x'); const b = ok('https://example.com:443/a');
   assert.equal(urlKey(a), urlKey(b));
   const key = idempotencyKeyFor(a, 3);
-  assert.match(key, /^crawl:[a-f0-9]{32}:3$/); assert.equal(IDEMPOTENCY_KEY.test(key), true); assert.ok(key.length <= 128);
+  assert.match(key, /^crawl:[a-f0-9]{32}:3$/); assert.equal(isValidIdempotencyKey(key), true); assert.ok(key.length <= 128);
   assert.notEqual(idempotencyKeyFor(a, 3), idempotencyKeyFor(a, 4));
   assert.equal(sameOrigin('https://example.com/a', 'https://example.com/b'), true); assert.equal(sameOrigin('https://example.com/', 'https://other.example/'), false);
 });
