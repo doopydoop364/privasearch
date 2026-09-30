@@ -32,8 +32,8 @@ const site = await startSite((host, path) => {
   const i = path === '/' ? 0 : Number(/^\/p(\d+)$/.exec(path)?.[1] ?? -1); if (i < 0 || i >= perHost) return undefined;
   const links = [i + 1, i * 2 + 1, i * 2 + 2].filter(n => n < perHost).map(n => `<a href="/p${n}">next</a>`).join('');
   return { body: `<!doctype html><html lang="en"><head><title>${words[i % words.length]} ${hostName(h)} ${i}</title><meta name="description" content="Synthetic page ${i}"></head><body><p>${body(h, i)}</p>${links}</body></html>` };
-});
-const rig = await startCore(core, { hostMap, minHostDelayMs: Number(process.env.SCALE_HOST_DELAY_MS ?? 100) });
+}, Number(process.env.SCALE_SITE_DELAY_MS ?? 0)); // per-request latency, to imitate a real network
+const rig = await startCore(core, { hostMap, minHostDelayMs: Number(process.env.SCALE_HOST_DELAY_MS ?? 100), nodes: Number(process.env.SCALE_NODES ?? 1) });
 const latencies: number[] = []; let payloadBytes = 0; let submitted = 0; let inFlightMax = 0; let inFlight = 0;
 const inner = new PrivaNetTransport({ url: rig.url, tokens: rig.tokens, allowInsecureLoopback: true, pollMs: Number(process.env.SCALE_POLL_MS ?? 25) });
 const transport: FetchTransport = { async fetch(request: FetchRequest) {
@@ -46,11 +46,11 @@ const frontier = new Frontier(db, { hostDelayMs: Number(process.env.SCALE_HOST_D
 const crawler = new Crawler({ frontier, documents, transport, clock, batch: Number(process.env.SCALE_BATCH ?? 32) });
 for (let h = 0; h < hosts; h++) frontier.add(`http://${hostName(h)}/`, { queue: 'PUBLIC' }, clock());
 
-const started = performance.now(); const cpu0 = { node: cpuSeconds(rig.pids.node), coordinator: cpuSeconds(rig.pids.coordinator) };
+const started = performance.now(); const cpu0 = { node: rig.pids.nodes.reduce((sum, pid) => sum + cpuSeconds(pid), 0), coordinator: cpuSeconds(rig.pids.coordinator) };
 const totals = { outcomes: {} as Record<string, number>, indexed: 0, duplicates: 0, invalidResults: 0, transportErrors: 0 };
 let peakNodeRss = 0; let peakCoordRss = 0;
 const deadline = new AbortController(); const timer = setTimeout(() => deadline.abort(), Number(process.env.SCALE_TIMEOUT_MS ?? 20 * 60000));
-const sampler = setInterval(() => { peakNodeRss = Math.max(peakNodeRss, rss(rig.pids.node)); peakCoordRss = Math.max(peakCoordRss, rss(rig.pids.coordinator)); }, 250);
+const sampler = setInterval(() => { peakNodeRss = Math.max(peakNodeRss, rig.pids.nodes.reduce((sum, pid) => sum + rss(pid), 0)); peakCoordRss = Math.max(peakCoordRss, rss(rig.pids.coordinator)); }, 250);
 const mode = process.env.SCALE_MODE ?? 'pipeline'; // pipeline: continuous refill (Crawler.run); batch: one batch at a time (Crawler.runOnce)
 if (mode === 'pipeline') {
   const s = await crawler.run({ concurrency: Number(process.env.SCALE_BATCH ?? 32), signal: deadline.signal, until: () => documents.count().documents >= pages });
@@ -70,11 +70,11 @@ const seconds = (performance.now() - started) / 1000;
 const count = documents.count(); const hit = documents.search('alpine').length;
 const bytes = (path: string) => { try { return statSync(path).size; } catch { return 0; } };
 const report = {
-  target: pages, hosts, perHost, mode, pollMs: Number(process.env.SCALE_POLL_MS ?? 25), batch: Number(process.env.SCALE_BATCH ?? 32), seconds: Math.round(seconds * 10) / 10, pagesPerMinute: Math.round(count.documents / seconds * 60),
+  target: pages, hosts, perHost, mode, nodes: Number(process.env.SCALE_NODES ?? 1), slots: Number(process.env.SCALE_SLOTS ?? 1), siteDelayMs: Number(process.env.SCALE_SITE_DELAY_MS ?? 0), pollMs: Number(process.env.SCALE_POLL_MS ?? 25), batch: Number(process.env.SCALE_BATCH ?? 32), seconds: Math.round(seconds * 10) / 10, pagesPerMinute: Math.round(count.documents / seconds * 60),
   fetchesSubmitted: submitted, maxInFlight: inFlightMax, outcomes: totals.outcomes, documents: count, invalidResults: totals.invalidResults, transportErrors: totals.transportErrors,
   latencyMs: { p50: Math.round(pct(latencies, 0.5)), p95: Math.round(pct(latencies, 0.95)), max: Math.round(Math.max(0, ...latencies)) },
   avgResultBytes: submitted ? Math.round(payloadBytes / submitted) : 0, searchHitsForAlpine: hit,
-  node: { cpuSeconds: Math.round((cpuSeconds(rig.pids.node) - cpu0.node) * 100) / 100, peakRssMiB: Math.round(peakNodeRss / 1048576) },
+  node: { cpuSeconds: Math.round((rig.pids.nodes.reduce((sum, pid) => sum + cpuSeconds(pid), 0) - cpu0.node) * 100) / 100, peakRssMiB: Math.round(peakNodeRss / 1048576) },
   coordinator: { cpuSeconds: Math.round((cpuSeconds(rig.pids.coordinator) - cpu0.coordinator) * 100) / 100, peakRssMiB: Math.round(peakCoordRss / 1048576), dbBytes: bytes(join(rig.dataDir, 'coordinator', 'coordinator.sqlite')) },
   siteRequests: site.requests.length, siteBytesServedApprox: site.requests.length * 1900,
   nodeLogEvents: Object.fromEntries(Object.entries(rig.logs.join('').split('\n').reduce<Record<string, number>>((a, l) => { const m = /"event":"([^"]+)"/.exec(l); if (m?.[1]) a[m[1]] = (a[m[1]] ?? 0) + 1; return a; }, {})).slice(0, 25)),
