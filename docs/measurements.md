@@ -72,3 +72,43 @@ Reading:
 - Zero invalid results and zero transport errors in every run. Single runs on one sandbox machine.
 
 Reproduce: `SCALE_MODE=pipeline SCALE_BATCH=32 SCALE_NODE_POLL_MS=1000 SCALE_POLL_MS=100 node dist/tests/scale-crawl.js 1000` (`SCALE_MODE=batch` for the old driver).
+
+## Experiment 4: a lease that waits for work (Core: PrivaNet-Core PR "Lease requests that wait for work")
+
+After the node poll fix, a node with nothing to do still checked for work once per poll interval, so a new job waited up to one interval before pickup (about 1 s at the default). The Coordinator can hold the node's lease request open until work exists. 1,000 pages, 50 hosts, default node poll interval, `pollMs` 100, one run per row, pipeline driver, one node with one job slot:
+
+| Concurrency | Before | After |
+| --- | --- | --- |
+| 8 | 741 pages/min, latency p50 1,025 ms | **3,814 pages/min, p50 120 ms** (5.1x) |
+| 32 | 3,404 pages/min, p50 422 ms | 4,482 pages/min, p50 369 ms |
+| 128 | 4,317 pages/min, p50 533 ms | 4,471 pages/min, p50 546 ms |
+
+Reading: low-concurrency and interactive (demand queue) crawls were pickup-latency bound and now are not. All three concurrencies plateau near 4,500 pages/min, about 13 ms of serial work per job: with instant local pages the single job slot is now the limit.
+
+## Experiment 5: what a real network does to a one-slot node
+
+The local site answers instantly, which hides network latency. `SCALE_SITE_DELAY_MS` adds a per-request delay, and `SCALE_NODES` runs several PrivaNode processes (the only way to get more job slots today). 600 pages, 50 hosts, 128 in flight, 200 ms per request (a page is a robots fetch plus the page, so about 400 ms per job):
+
+| Nodes | Pages/min | Latency p50 (ms) | Node processes RSS total | Coordinator CPU s (before job waits) |
+| --- | --- | --- | --- | --- |
+| 1 | 259 | 10,646 | 117 MiB | 34.8 |
+| 4 | 849 | 3,142 | 368 MiB | 13.2 |
+| 16 | 2,537 | 1,132 | 1,283 MiB | 6.2 |
+
+Reading:
+- A one-slot node's throughput is one job per (network time + about 13 ms of overhead): 259 pages/min at 200 ms per request, and it would be about 60 to 120 per minute at typical public-web latencies. Public crawling at a useful rate needs many concurrent fetches per node.
+- Adding node processes scales almost linearly (259, 849, 2,537), so the architecture parallelises; but every process costs about 80 MiB and its own identity, and owner limits are then per process, not per machine. That is an argument for **multi-slot nodes** (PrivaNet-Core extension point E7), which would keep one identity, one budget and one process. It needs careful resource accounting across concurrent jobs (see the PrivaNet-Core boundary document), so it is proposed, not built.
+- With a long queue, application job polling dominated the Coordinator: 35 s of CPU for 600 pages with one node. That led to Experiment 6.
+
+## Experiment 6: applications wait for results instead of polling (Core: "Job reads that wait for the result")
+
+`waitForResult` polled the Coordinator every `pollMs` per job. With 128 jobs waiting behind a slow node that is over a thousand status reads a second. The Coordinator now holds a job read until the job finishes and the SDK uses it. Same runs as Experiment 5:
+
+| Nodes | Coordinator CPU s, polling | Coordinator CPU s, job waits | Pages/min |
+| --- | --- | --- | --- |
+| 1 | 34.8 | **7.3** | 259, 258 |
+| 4 | 13.2 | **4.0** | 849, 846 |
+
+Throughput is unchanged (it is slot bound); the Coordinator load falls 3 to 5 times, which is what limits how many applications and nodes one Coordinator can serve. Zero invalid results and zero transport errors in every run of Experiments 4 to 6. Single runs, one sandbox machine, synthetic local site.
+
+Reproduce: `SCALE_SITE_DELAY_MS=200 SCALE_NODES=4 SCALE_BATCH=128 SCALE_POLL_MS=100 SCALE_HOST_DELAY_MS=50 node dist/tests/scale-crawl.js 600` (`SCALE_NODES`, `SCALE_SITE_DELAY_MS` are new).

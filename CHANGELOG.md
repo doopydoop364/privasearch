@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Added
+- Measurement experiments 4 to 6 in `docs/measurements.md` (lease that waits for work, one-slot node under simulated network latency, job reads that wait for the result) and `scale-crawl` knobs `SCALE_NODES` (several node processes) and `SCALE_SITE_DELAY_MS` (per-request site latency). The rig can start several PrivaNodes.
+
+### Added
 - `npm run crawl`: the crawl command. Wires the real `PrivaNetTransport` and `Crawler.run` to a SQLite database from environment configuration (validated, credentials only from the environment, distinct queue credentials required), seeds from arguments or a file, aggregate-only logs, clean stop on SIGINT or SIGTERM. Tested as a real process against a real Coordinator and PrivaNode.
 - `Crawler.run()`: a continuous pipeline that keeps up to `concurrency` crawls in flight and refills a slot the moment one frees, honours an abort signal and finishes what it already submitted. Measured against the batch driver on the real path: 1,281 to 3,404 pages per minute at 32 in flight. The frontier still allows one in-flight URL per host. `runOnce()` stays for tests and one-shot use.
 
