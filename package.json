@@ -1,0 +1,25 @@
+{
+  "name": "privasearch",
+  "version": "0.0.1",
+  "private": true,
+  "description": "PrivaSearch: an independent search engine that crawls through PrivaNet.",
+  "type": "module",
+  "engines": { "node": ">=24.4" },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "test": "npm run build && node --test \"dist/tests/*.test.js\"",
+    "serve": "node dist/src/main.js"
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.19.0",
+    "eslint": "^10.11.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.71.0"
+  }
+}
