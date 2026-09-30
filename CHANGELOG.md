@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- Measurement experiments (`docs/measurements.md`): SDK polling interval and the node poll loop, which found a Core throughput bug (59 to 1,018 pages per minute on default settings once fixed in PrivaNet-Core). `scale-crawl` accepts `SCALE_POLL_MS`, `SCALE_NODE_POLL_MS`, `SCALE_BATCH`, `SCALE_HOST_DELAY_MS`.
+
 ## [0.2.1] - 2026-09-30
 
 Licensing release. No behaviour change.

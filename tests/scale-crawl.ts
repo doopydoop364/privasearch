@@ -35,7 +35,7 @@ const site = await startSite((host, path) => {
 });
 const rig = await startCore(core, { hostMap, minHostDelayMs: Number(process.env.SCALE_HOST_DELAY_MS ?? 100) });
 const latencies: number[] = []; let payloadBytes = 0; let submitted = 0; let inFlightMax = 0; let inFlight = 0;
-const inner = new PrivaNetTransport({ url: rig.url, tokens: rig.tokens, allowInsecureLoopback: true, pollMs: 25 });
+const inner = new PrivaNetTransport({ url: rig.url, tokens: rig.tokens, allowInsecureLoopback: true, pollMs: Number(process.env.SCALE_POLL_MS ?? 25) });
 const transport: FetchTransport = { async fetch(request: FetchRequest) {
   const t0 = performance.now(); submitted++; inFlight++; inFlightMax = Math.max(inFlightMax, inFlight);
   try { const result = await inner.fetch(request); payloadBytes += Buffer.byteLength(JSON.stringify(result)); return result; }
@@ -61,7 +61,7 @@ const seconds = (performance.now() - started) / 1000;
 const count = documents.count(); const hit = documents.search('alpine').length;
 const bytes = (path: string) => { try { return statSync(path).size; } catch { return 0; } };
 const report = {
-  target: pages, hosts, perHost, seconds: Math.round(seconds * 10) / 10, pagesPerMinute: Math.round(count.documents / seconds * 60),
+  target: pages, hosts, perHost, pollMs: Number(process.env.SCALE_POLL_MS ?? 25), batch: Number(process.env.SCALE_BATCH ?? 32), seconds: Math.round(seconds * 10) / 10, pagesPerMinute: Math.round(count.documents / seconds * 60),
   fetchesSubmitted: submitted, maxInFlight: inFlightMax, outcomes: totals.outcomes, documents: count, invalidResults: totals.invalidResults, transportErrors: totals.transportErrors,
   latencyMs: { p50: Math.round(pct(latencies, 0.5)), p95: Math.round(pct(latencies, 0.95)), max: Math.round(Math.max(0, ...latencies)) },
   avgResultBytes: submitted ? Math.round(payloadBytes / submitted) : 0, searchHitsForAlpine: hit,
