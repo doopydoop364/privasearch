@@ -112,3 +112,26 @@ Reading:
 Throughput is unchanged (it is slot bound); the Coordinator load falls 3 to 5 times, which is what limits how many applications and nodes one Coordinator can serve. Zero invalid results and zero transport errors in every run of Experiments 4 to 6. Single runs, one sandbox machine, synthetic local site.
 
 Reproduce: `SCALE_SITE_DELAY_MS=200 SCALE_NODES=4 SCALE_BATCH=128 SCALE_POLL_MS=100 SCALE_HOST_DELAY_MS=50 node dist/tests/scale-crawl.js 600` (`SCALE_NODES`, `SCALE_SITE_DELAY_MS` are new).
+
+## Experiment 7: multi-slot nodes (Core: "Multi-slot PrivaNodes")
+
+One node process running several jobs at once, against the same one-slot baseline and the 16-process workaround from Experiment 5. 600 pages, 50 hosts, 128 in flight, 200 ms per request, one run per row:
+
+| Configuration | Pages/min | Latency p50 (ms) | Node RSS (MiB) | Coordinator CPU s |
+| --- | --- | --- | --- | --- |
+| 1 process, 1 slot | 259 | 10,661 | 116 | 7.3 |
+| 1 process, 4 slots | 988 | 2,741 | 118 | 3.8 |
+| 1 process, 16 slots | **2,103** | 1,230 | **133** | 3.7 |
+| 1 process, 32 slots | 2,118 | 1,202 | 133 | 7.3 |
+| 16 processes, 1 slot each | 2,537 | 1,132 | 1,283 | 6.2 (polling era) |
+
+Reading:
+- Slots inside one process give about 10 times less memory for about 83% of the throughput of separate processes, with one identity and one set of owner limits.
+- Throughput stops at 16 to 32 slots because the Coordinator reserves the CPU class of every running job (5% each for `web.fetch.v1`) against the CPU budget the node reported, so about 16 fit in this run. That is the owner's limit being honoured, not a bug: an owner with the default policy (25% CPU) would run about five at once. Raising concurrency further is an owner policy decision, and a measured CPU figure for the fetch handler (about 1.5% per active fetch here, against the 5% declared) would justify a lower CPU class for it if it holds on real networks.
+- Zero invalid results and zero transport errors in every run.
+
+Reproduce: `SCALE_SLOTS=16 SCALE_SITE_DELAY_MS=200 SCALE_BATCH=128 SCALE_POLL_MS=100 SCALE_HOST_DELAY_MS=50 node dist/tests/scale-crawl.js 600` (`SCALE_SLOTS` is new).
+
+## Where this leaves the pipeline
+
+Each experiment removed one bottleneck and exposed the next: node poll loop (59 to 1,018 pages per minute on default settings), pipelining (batch to continuous), lease pickup latency, application polling (Coordinator CPU 5 times lower), job slots (259 to 2,103 pages per minute per process at 200 ms latency). What is measured is a synthetic local site on one machine. The next honest step is real sites (robots variety, slow and failing hosts, redirects), where the per-host politeness rules and the network, not the platform, should be the limit.

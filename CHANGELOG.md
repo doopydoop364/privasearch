@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- Measurement experiment 7 (multi-slot nodes) and the `SCALE_SLOTS` knob; the rig raises its node memory ceiling so slot experiments are not memory bound.
 - Measurement experiments 4 to 6 in `docs/measurements.md` (lease that waits for work, one-slot node under simulated network latency, job reads that wait for the result) and `scale-crawl` knobs `SCALE_NODES` (several node processes) and `SCALE_SITE_DELAY_MS` (per-request site latency). The rig can start several PrivaNodes.
 
 ### Added

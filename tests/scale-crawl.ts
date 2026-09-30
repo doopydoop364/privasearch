@@ -70,7 +70,7 @@ const seconds = (performance.now() - started) / 1000;
 const count = documents.count(); const hit = documents.search('alpine').length;
 const bytes = (path: string) => { try { return statSync(path).size; } catch { return 0; } };
 const report = {
-  target: pages, hosts, perHost, mode, nodes: Number(process.env.SCALE_NODES ?? 1), siteDelayMs: Number(process.env.SCALE_SITE_DELAY_MS ?? 0), pollMs: Number(process.env.SCALE_POLL_MS ?? 25), batch: Number(process.env.SCALE_BATCH ?? 32), seconds: Math.round(seconds * 10) / 10, pagesPerMinute: Math.round(count.documents / seconds * 60),
+  target: pages, hosts, perHost, mode, nodes: Number(process.env.SCALE_NODES ?? 1), slots: Number(process.env.SCALE_SLOTS ?? 1), siteDelayMs: Number(process.env.SCALE_SITE_DELAY_MS ?? 0), pollMs: Number(process.env.SCALE_POLL_MS ?? 25), batch: Number(process.env.SCALE_BATCH ?? 32), seconds: Math.round(seconds * 10) / 10, pagesPerMinute: Math.round(count.documents / seconds * 60),
   fetchesSubmitted: submitted, maxInFlight: inFlightMax, outcomes: totals.outcomes, documents: count, invalidResults: totals.invalidResults, transportErrors: totals.transportErrors,
   latencyMs: { p50: Math.round(pct(latencies, 0.5)), p95: Math.round(pct(latencies, 0.95)), max: Math.round(Math.max(0, ...latencies)) },
   avgResultBytes: submitted ? Math.round(payloadBytes / submitted) : 0, searchHitsForAlpine: hit,

@@ -44,14 +44,14 @@ export async function startCore(coreDir: string, options: { identity?: Identity;
   const identity = options.identity ?? { product: 'PrivaSearchBot', infoUrl: 'https://privasearch.example/bot' };
   const policy = join(dir, 'policy.json');
   await writeFile(policy, JSON.stringify({
-    reserveMemoryBytes: 0, safetyMarginBytes: 0, maxMemoryBytes: 1024 ** 3, maxCpuPercent: 100, reserveCpuPercent: 0, onBattery: 'normal',
+    reserveMemoryBytes: 0, safetyMarginBytes: 0, maxMemoryBytes: 8 * 1024 ** 3, maxCpuPercent: 100, reserveCpuPercent: 0, onBattery: 'normal',
     fetch: { minHostDelayMs: options.minHostDelayMs ?? 0, maxRequestsPerMinute: 6000, ...(options.hostMap ? { unsafeLocal: { allowedCidrs: ['127.0.0.0/8'], allowedPorts: [], hostMap: options.hostMap } } : {}) },
   }));
   const admin = randomBytes(32).toString('hex');
   const env: NodeJS.ProcessEnv = { ...process.env, PRIVANET_ADMIN_SECRET: admin, PRIVANET_COORDINATOR_URL: url, PRIVANET_HOST: '127.0.0.1', PRIVANET_PORT: String(port),
     PRIVANET_DATA_DIR: join(dir, 'coordinator'), PRIVANET_LEASE_MS: '30000', PRIVANET_MAINTENANCE_MS: '200', PRIVANET_MAX_PENDING_PER_APP: '100000',
     PRIVANODE_COORDINATOR_URL: url, PRIVANODE_STATE_DIR: join(dir, 'node'), PRIVANODE_ALLOW_INSECURE_LOOPBACK: 'true', PRIVANODE_CAPABILITIES: 'web.fetch.v1',
-    PRIVANODE_POLICY_FILE: policy, PRIVANODE_HEARTBEAT_MS: '1000', PRIVANODE_POLL_MS: process.env.SCALE_NODE_POLL_MS ?? '50' };
+    PRIVANODE_POLICY_FILE: policy, PRIVANODE_HEARTBEAT_MS: '1000', PRIVANODE_POLL_MS: process.env.SCALE_NODE_POLL_MS ?? '50', PRIVANODE_JOB_SLOTS: process.env.SCALE_SLOTS ?? '1' };
   const start = async (script: string, extra: NodeJS.ProcessEnv, event: string, waitForCount = 1) => {
     const child = spawn(process.execPath, [join(coreDir, script)], { cwd: coreDir, env: { ...env, ...extra }, stdio: ['ignore', 'pipe', 'pipe'] });
     children.push(child);
