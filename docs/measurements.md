@@ -149,6 +149,23 @@ Reading:
 
 Reproduce: `SCALE_NODES=4 SCALE_SLOTS=16 SCALE_SITE_DELAY_MS=200 SCALE_BATCH=256 SCALE_POLL_MS=100 SCALE_HOST_DELAY_MS=0 SCALE_TIMEOUT_MS=600000 node dist/tests/scale-crawl.js 3000`.
 
+## Experiment 9: PrivaSearch on a desktop host, a server Coordinator over TLS, and a Coordinator restart (Core: "Deployment readiness")
+
+The deployment this project is meant for, simulated with real separate network stacks (PrivaNet-Core's network-namespace rig, `tests/lan-crawl.mjs`): PrivaSearch (`npm run crawl`, the real command, configured only by environment variables) runs on the **desktop** host; the Coordinator and Caddy (TLS with its own CA) run on the **server** host; a conservative server node and a larger desktop node, both with the shipped example policies, fetch from a synthetic eight-name website on a third host (150 ms per page). Twenty seconds in the Coordinator was killed (`SIGKILL`) and restarted six seconds later. One run per row, Node 22, one 4-CPU machine running everything, Core v0.3.0-alpha.5:
+
+| PrivaSearch | First page indexed after the Coordinator was back | Result |
+| --- | --- | --- |
+| 0.3.1 (a flat 60 s wait per URL after a transport failure) | **54 s** | resumed, but an outage of six seconds cost nearly a minute |
+| this release (pipeline-level backoff, 1 s then doubling, capped at 60 s) | **1.0 s** | 856 pages fetched, 0 invalid results, 15 submissions retried across the outage |
+
+Reading:
+- The platform recovered in seconds (nodes reconnected, the SDK kept waiting, sessions and jobs survived); the stall was PrivaSearch's own policy. A transport failure was not the URL's fault, so it correctly did not count against the host, but it waited a flat 60 s per URL. The driver now opens one short window on the first failure, lets every URL that fails inside it share its end, doubles the next window while PrivaNet stays unreachable, stops leasing while a window is open (a dead Coordinator is not hammered: 180 submissions in 350 ms without the pause, at most 12 with it) and resets on the first answer.
+- The crawl then ran at the crawler's own politeness (two seconds per host, eight hosts), about 200 pages a minute, which is the intended limit, not a bottleneck.
+- All 856 pages were fetched by the desktop node; the server node received none. The Coordinator hands a job to whichever capable node asks first, so when the desktop can absorb the whole workload the conservative server node stays idle, which is what you want from a control-plane host.
+- Limits: synthetic site, single runs, simulated network, one machine.
+
+Reproduce (Linux, root, a built PrivaNet-Core checkout at v0.3.0-alpha.5 or newer, `npm run build` here): `sudo -E PRIVANET_CORE_DIR=../PrivaNet-Core node tests/lan-crawl.mjs`.
+
 ## Where this leaves the pipeline
 
 Each experiment removed one bottleneck and exposed the next: node poll loop (59 to 1,018 pages per minute on default settings), pipelining (batch to continuous), lease pickup latency, application polling (Coordinator CPU 5 times lower), job slots (259 to 2,103 pages per minute per process at 200 ms latency). What is measured is a synthetic local site on one machine. The next honest step is real sites (robots variety, slow and failing hosts, redirects), where the per-host politeness rules and the network, not the platform, should be the limit.

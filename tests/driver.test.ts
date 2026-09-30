@@ -4,6 +4,7 @@ import { outcomeResult, pageResult } from '../src/privanet/fake-transport.js';
 import { TransportError } from '../src/privanet/transport.js';
 import { idempotencyKeyFor, urlKey } from '../src/url.js';
 import { rig } from './helpers.js';
+import { Crawler } from '../src/driver.js';
 
 const at = 1_000_000_000;
 const site = (pages: Record<string, ReturnType<typeof pageResult>>) => (input: { url: string }) => pages[input.url] ?? outcomeResult('HTTP_ERROR', input.url, at, { httpStatus: 404 });
@@ -158,4 +159,27 @@ test('run(): stops when told to, finishes what it already submitted, and does no
   assert.ok(summary.submitted < 40, 'aborted before the whole frontier was submitted');
   assert.equal(r.frontier.stats().IN_FLIGHT, 0, 'nothing is left in flight: every submitted crawl was ingested or released');
   assert.equal(r.documents.count().documents, summary.indexed + summary.duplicates);
+});
+
+test('a brief PrivaNet outage costs seconds, not a flat minute per URL, and every URL is resubmitted under the same idempotency key', async () => {
+  let failing = 6;
+  const r = rig(input => { if (failing-- > 0) throw new TransportError('UNAVAILABLE', true); return pageResult(input.url, at, { title: `t ${input.url}`, text: `body ${input.url}` }); });
+  const crawler = new Crawler({ frontier: r.frontier, documents: r.documents, transport: r.transport, clock: Date.now, batch: 6, infrastructureBackoffBaseMs: 20 });
+  const urls = ['a', 'b', 'c', 'd', 'e', 'f'].map(host => `https://${host}.example/`);
+  for (const url of urls) r.frontier.add(url, { queue: 'PUBLIC' }, Date.now());
+  const started = Date.now();
+  const summary = await crawler.run({ concurrency: 6, until: () => r.documents.count().documents >= 6, idleMs: 2 });
+  assert.ok(Date.now() - started < 5000, 'resumed within seconds');
+  assert.deepEqual([summary.transportErrors, summary.indexed, summary.invalidResults], [6, 6, 0]);
+  assert.equal(new Set(r.transport.calls.map(call => call.idempotencyKey)).size, 6, 'six URLs, six keys: a retry reuses its key, so PrivaNet never creates a second job');
+});
+
+test('while PrivaNet stays unreachable the pipeline backs off and does not churn through the frontier', async () => {
+  const r = rig(() => { throw new TransportError('UNAVAILABLE', true); });
+  const crawler = new Crawler({ frontier: r.frontier, documents: r.documents, transport: r.transport, clock: Date.now, batch: 4, infrastructureBackoffBaseMs: 100 });
+  for (let i = 0; i < 60; i++) r.frontier.add(`https://h${i}.example/`, { queue: 'PUBLIC' }, Date.now());
+  const stop = new AbortController(); setTimeout(() => stop.abort(), 350);
+  await crawler.run({ concurrency: 4, signal: stop.signal, idleMs: 2 });
+  // Windows of 100 ms then 200 ms: at most three bursts of four submissions in 350 ms, not one burst per loop turn.
+  assert.ok(r.transport.calls.length >= 4 && r.transport.calls.length <= 12, `${r.transport.calls.length} submissions while unreachable`);
 });

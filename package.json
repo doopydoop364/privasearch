@@ -1,6 +1,6 @@
 {
   "name": "privasearch",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "PrivaSearch: an independent search engine that crawls through PrivaNet.",
   "license": "Apache-2.0",
@@ -17,9 +17,9 @@
     "crawl": "node dist/src/crawl.js"
   },
   "dependencies": {
-    "@privanet/protocol": "https://github.com/doopydoop364/PrivaNet-Core/releases/download/v0.3.0-alpha.4/privanet-protocol-0.3.0-alpha.4.tgz",
-    "@privanet/sdk": "https://github.com/doopydoop364/PrivaNet-Core/releases/download/v0.3.0-alpha.4/privanet-sdk-0.3.0-alpha.4.tgz",
-    "@privanet/shared": "https://github.com/doopydoop364/PrivaNet-Core/releases/download/v0.3.0-alpha.4/privanet-shared-0.3.0-alpha.4.tgz",
+    "@privanet/protocol": "https://github.com/doopydoop364/PrivaNet-Core/releases/download/v0.3.0-alpha.5/privanet-protocol-0.3.0-alpha.5.tgz",
+    "@privanet/sdk": "https://github.com/doopydoop364/PrivaNet-Core/releases/download/v0.3.0-alpha.5/privanet-sdk-0.3.0-alpha.5.tgz",
+    "@privanet/shared": "https://github.com/doopydoop364/PrivaNet-Core/releases/download/v0.3.0-alpha.5/privanet-shared-0.3.0-alpha.5.tgz",
     "zod": "^4.6.5"
   },
   "devDependencies": {

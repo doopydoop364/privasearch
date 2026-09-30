@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-30
+
+Consumes PrivaNet-Core v0.3.0-alpha.5 and fixes a stall found by running PrivaSearch on a desktop against a server Coordinator.
+
+### Fixed
+- **A short PrivaNet outage stalled the crawl for a flat minute.** After a transport failure the driver made every affected URL wait 60 s, so a six-second Coordinator restart cost about 54 s before the next page. It now uses a pipeline-level backoff: the first failure opens a one-second window shared by every URL that fails inside it, each further failure doubles the next window (up to `infrastructureRetryMs`, 60 s), leasing pauses while a window is open, and one answer from PrivaNet resets it. Resubmissions still reuse the idempotency key. Measured: first page 1.0 s after the Coordinator was back (was 54 s); without the pause a dead Coordinator was hit with 180 submissions in 350 ms, with it at most 12. New option `infrastructureBackoffBaseMs`.
+
+### Changed
+- The `@privanet/*` packages and the Core release used by CI and the release workflow move to `v0.3.0-alpha.5` (the SDK's `waitForResult` now survives a Coordinator restart on its own).
+
+### Added
+- `tests/lan-crawl.mjs` and measurement experiment 9: PrivaSearch on a desktop host, a server Coordinator behind TLS, and a Coordinator restart, using PrivaNet-Core's network-namespace rig.
+
 ## [0.3.1] - 2026-09-30
 
 Consumes PrivaNet-Core v0.3.0-alpha.4 (Coordinator, PrivaNode and the `@privanet/*` packages) and adds a multi-node measurement. No PrivaSearch behaviour change.

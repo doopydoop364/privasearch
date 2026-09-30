@@ -55,7 +55,7 @@ PrivaSearch is licensed under the [Apache License, Version 2.0](LICENSE) (`Apach
 
 ## Development
 
-Node **24.4+**. The PrivaNet packages are installed from the PrivaNet-Core `v0.3.0-alpha.4` release assets (a temporary bridge until they are published to the npm registry; see PrivaNet-Core `docs/PACKAGES.md`).
+Node **24.4+**. The PrivaNet packages are installed from the PrivaNet-Core `v0.3.0-alpha.5` release assets (a temporary bridge until they are published to the npm registry; see PrivaNet-Core `docs/PACKAGES.md`).
 
 ```bash
 npm ci
@@ -82,7 +82,7 @@ Options (environment): `PRIVASEARCH_DB`, `PRIVASEARCH_CONCURRENCY` (default 32, 
 The real-path tests need a built PrivaNet-Core checkout and permission to listen on `127.0.0.1:80` (PrivaSearch crawls default ports only); without them they are skipped:
 
 ```bash
-git clone --branch v0.3.0-alpha.4 https://github.com/doopydoop364/PrivaNet-Core ../PrivaNet-Core && (cd ../PrivaNet-Core && npm ci && npm run build)
+git clone --branch v0.3.0-alpha.5 https://github.com/doopydoop364/PrivaNet-Core ../PrivaNet-Core && (cd ../PrivaNet-Core && npm ci && npm run build)
 export PRIVANET_CORE_DIR=$PWD/../PrivaNet-Core
 npm test                                        # includes the end-to-end path
 node dist/tests/scale-crawl.js 100              # measured crawl of a synthetic local site

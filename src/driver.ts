@@ -10,7 +10,9 @@ import { idempotencyKeyFor, parseCrawlUrl } from './url.js';
 export interface DriverOptions {
   frontier: Frontier; documents: DocumentStore; transport: FetchTransport; clock?: () => number;
   /** URLs submitted per pass; the frontier still allows only one per host. */
-  batch?: number; infrastructureRetryMs?: number;
+  batch?: number;
+  /** Longest wait after PrivaNet could not be reached (default 60 s); the wait starts at `infrastructureBackoffBaseMs` and doubles while it stays unreachable. */
+  infrastructureRetryMs?: number; infrastructureBackoffBaseMs?: number;
 }
 export interface PassSummary {
   submitted: number; outcomes: Partial<Record<FetchResult['outcome'], number>>;
@@ -23,8 +25,22 @@ export interface PassSummary {
  * contract schema and a set of cross-checks against what was asked for.
  */
 export class Crawler {
-  private readonly clock: () => number; private readonly batch: number; private readonly infraRetryMs: number;
-  constructor(private readonly o: DriverOptions) { this.clock = o.clock ?? Date.now; this.batch = o.batch ?? 8; this.infraRetryMs = o.infrastructureRetryMs ?? 60000; }
+  private readonly clock: () => number; private readonly batch: number; private readonly infraRetryMs: number; private readonly infraBaseMs: number;
+  /** Consecutive windows in which PrivaNet was unreachable, and when the current window ends. */
+  private infraLevel = 0; private breakerUntil = 0;
+  constructor(private readonly o: DriverOptions) {
+    this.clock = o.clock ?? Date.now; this.batch = o.batch ?? 8; this.infraRetryMs = o.infrastructureRetryMs ?? 60000; this.infraBaseMs = o.infrastructureBackoffBaseMs ?? 1000;
+  }
+
+  /**
+   * How long a URL waits after PrivaNet could not be reached. The first failure opens a short window (1 s), every URL that fails inside it shares its end,
+   * and a failure after it doubles the next window up to the configured maximum; one answer from PrivaNet resets it. A brief Coordinator restart therefore
+   * costs seconds, not a flat minute per URL (measured on a real LAN deployment), while a long outage is still probed gently instead of hammered.
+   */
+  private infrastructureDelay(now: number): number {
+    if (now >= this.breakerUntil) { this.infraLevel++; this.breakerUntil = now + Math.min(this.infraRetryMs, this.infraBaseMs * 2 ** Math.min(this.infraLevel - 1, 16)); }
+    return this.breakerUntil - now;
+  }
 
   async runOnce(): Promise<PassSummary> {
     const summary: PassSummary = { submitted: 0, outcomes: {}, indexed: 0, duplicates: 0, discovered: 0, invalidResults: 0, transportErrors: 0 };
@@ -48,7 +64,8 @@ export class Crawler {
     const nap = (ms: number) => new Promise<void>(resolve => { const timer = setTimeout(resolve, ms); options.signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true }); });
     while (!options.signal?.aborted && !options.until?.()) {
       const room = concurrency - active.size;
-      if (room > 0) {
+      // While PrivaNet is unreachable nothing new is leased: the frontier is not churned through failing submissions.
+      if (room > 0 && this.clock() >= this.breakerUntil) {
         this.o.frontier.requeueStale(this.clock());
         for (const item of this.o.frontier.lease(this.clock(), room)) {
           const task: Promise<void> = this.crawl(item, summary).finally(() => { active.delete(task); });
@@ -73,9 +90,11 @@ export class Crawler {
     } catch (error) {
       summary.transportErrors++;
       // No result was obtained: not the URL's fault. Keep the generation so a resubmission is deduplicated by PrivaNet.
-      const delay = error instanceof TransportError && !error.retryable ? this.infraRetryMs * 10 : this.infraRetryMs;
-      this.o.frontier.release(item.urlKey, this.clock(), delay); return;
+      const now = this.clock();
+      const delay = error instanceof TransportError && !error.retryable ? this.infraRetryMs * 10 : this.infrastructureDelay(now);
+      this.o.frontier.release(item.urlKey, now, delay); return;
     }
+    this.infraLevel = 0;
     const parsed = FetchResultSchema.safeParse(raw);
     const problem = parsed.success ? this.crossCheck(item, parsed.data) : 'SCHEMA';
     if (!parsed.success || problem) { summary.invalidResults++; this.o.frontier.fail(item.urlKey, this.clock(), `INVALID_RESULT:${problem ?? 'SCHEMA'}`); return; }
