@@ -24,7 +24,7 @@ createServer((req, res) => {
   const n = Number(/^\\/p\\/(\\d+)$/.exec(req.url ?? '')?.[1] ?? 'NaN'); if (!(n >= 0 && n < pages)) { res.writeHead(404); res.end(); return; }
   const host = req.headers.host; const links = [2 * n + 1, 2 * n + 2].filter(m => m < pages).map(m => '<a href="http://' + host + '/p/' + m + '">next ' + m + '</a>').join(' ');
   setTimeout(() => { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); res.end('<!doctype html><html><head><title>Page ' + n + ' of ' + host + '</title></head><body><p>' + 'lorem ipsum '.repeat(40) + links + '</p></body></html>'); }, delay);
-}).listen(8080, '0.0.0.0', () => console.log('{"event":"site.started"}'));`);
+}).listen(80, '0.0.0.0', () => console.log('{"event":"site.started"}'));`);
   const siteLogs = []; lan.web.spawn(process.execPath, [siteFile], { SITE_PAGES: String(PAGES), SITE_DELAY_MS: '150' }, siteLogs);
   await eventually('site', () => siteLogs.join('').includes('site.started') || undefined);
 
@@ -36,7 +36,7 @@ createServer((req, res) => {
   for (const name of ['server-node', 'desktop-node']) {
     const p = JSON.parse(readFileSync(join(core, 'deploy', 'policy', `${name}.json`), 'utf8'));
     policies[name] = { ...p, reserveMemoryBytes: 0, safetyMarginBytes: 0, reserveCpuPercent: 0, reserveDiskBytes: 0,
-      fetch: { minHostDelayMs: 0, maxRequestsPerMinute: 6000, unsafeLocal: { allowedCidrs: ['10.77.0.0/24'], allowedPorts: [8080], hostMap: Object.fromEntries(hostNames.map(h => [h, '10.77.0.3'])) } } };
+      fetch: { minHostDelayMs: 0, maxRequestsPerMinute: 6000, unsafeLocal: { allowedCidrs: ['10.77.0.0/24'], allowedPorts: [], hostMap: Object.fromEntries(hostNames.map(h => [h, '10.77.0.3'])) } } };
   }
   const nodeLogs = {};
   for (const [name, host, policy, slots] of [['srv', lan.server, 'server-node', 8], ['dsk', lan.desktop, 'desktop-node', 24]]) {
@@ -48,7 +48,7 @@ createServer((req, res) => {
 
   // PrivaSearch on the desktop: the crawl command, configured only through environment variables, reaching the server through https://<server>.
   const crawlLogs = []; const db = join(lan.dir, 'privasearch.sqlite');
-  const crawl = lan.desktop.spawn(process.execPath, [resolve('dist', 'src', 'crawl.js'), ...hostNames.map(h => `http://${h}:8080/p/0`)], {
+  const crawl = lan.desktop.spawn(process.execPath, [resolve('dist', 'src', 'crawl.js'), ...hostNames.map(h => `http://${h}/p/0`)], {
     PRIVANET_COORDINATOR_URL: lan.url, NODE_EXTRA_CA_CERTS: lan.caCert, PRIVANET_DEMAND_TOKEN: demand.token, PRIVANET_PUBLIC_TOKEN: pub.token,
     PRIVASEARCH_DB: db, PRIVASEARCH_CONCURRENCY: '32', PRIVASEARCH_WAIT_TIMEOUT_MS: '120000', PRIVASEARCH_POLL_MS: '100' }, crawlLogs);
   const started = Date.now(); let exited = false; crawl.once('close', () => { exited = true; });
@@ -57,7 +57,7 @@ createServer((req, res) => {
   await lan.stopCoordinator('SIGKILL'); await sleep(6000); await lan.startCoordinator(); const tBack = Date.now();
   let lastDocs = before, afterFirst;
   while (!exited && Date.now() - started < Number(process.env.LAN_TIMEOUT_S ?? 600) * 1000) { await sleep(1000); const d = docs(); if (afterFirst === undefined && d > before) afterFirst = Date.now(); lastDocs = d; }
-  if (process.env.LAN_DEBUG) { const tail = (l) => l.join('').trim().split('\n').slice(-6).join('\n'); console.error('CRAWL LOG\n' + tail(crawlLogs) + '\nDESKTOP NODE\n' + tail(nodeLogs.dsk) + '\nSERVER NODE\n' + tail(nodeLogs.srv) + '\nCOORDINATOR\n' + tail(lan.coordinatorLogs)); }
+  if (process.env.LAN_DEBUG) { const tail = (l) => l.join('').trim().split('\n').slice(-8).join('\n'); console.error('CADDY\n' + tail(lan.caddyLogs) + '\nLISTENING\n' + await lan.server.run('ss', ['-ltn']).catch(() => '?') + '\nCRAWL LOG\n' + tail(crawlLogs) + '\nDESKTOP NODE\n' + tail(nodeLogs.dsk) + '\nSERVER NODE\n' + tail(nodeLogs.srv) + '\nCOORDINATOR\n' + tail(lan.coordinatorLogs)); }
   const summaryLine = crawlLogs.join('').split('\n').filter(l => l.includes('crawl.stopped')).pop();
   console.log(JSON.stringify({ pagesAvailable: PAGES * HOSTS, documentsIndexedBeforeOutage: before, documentsIndexedAtEnd: lastDocs, outageSeconds: (tBack - tKill) / 1000,
     firstNewDocumentAfterRestartSeconds: afterFirst ? (afterFirst - tBack) / 1000 : null, totalSeconds: (Date.now() - started) / 1000, crawlExited: exited, summary: summaryLine ? JSON.parse(summaryLine) : null,
