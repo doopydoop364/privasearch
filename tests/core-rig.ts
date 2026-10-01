@@ -15,6 +15,8 @@ export interface CoreRig {
   url: string; pids: { coordinator: number; node: number; nodes: number[] }; dataDir: string; tokens: { DEMAND: string; PUBLIC: string }; identity: Identity; logs: string[];
   /** Every PrivaNode log line, so metrics such as fetch outcomes can be read back. */
   stop(): Promise<void>;
+  /** Kills the Coordinator without warning (SIGKILL: a crash, not a shutdown), leaves it down for `downMs`, then starts it again on the same address and data directory. */
+  restartCoordinator(downMs?: number): Promise<void>;
 }
 
 async function unusedPort(): Promise<number> {
@@ -59,11 +61,11 @@ export async function startCore(coreDir: string, options: { identity?: Identity;
     await until(child, logs, event, waitForCount); return child;
   };
   const stop = async () => {
-    for (const child of children) if (child.exitCode === null) await new Promise<void>(resolve => { const t = setTimeout(() => child.kill('SIGKILL'), 5000); child.once('close', () => { clearTimeout(t); resolve(); }); child.kill('SIGTERM'); });
+    for (const child of children) if (child.exitCode === null && child.signalCode === null) await new Promise<void>(resolve => { const t = setTimeout(() => child.kill('SIGKILL'), 5000); child.once('close', () => { clearTimeout(t); resolve(); }); child.kill('SIGTERM'); });
     await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   };
   try {
-    const coordinator = await start('apps/coordinator/dist/main.js', {}, 'coordinator.started');
+    let coordinator = await start('apps/coordinator/dist/main.js', {}, 'coordinator.started');
     const tool = async (args: string[], extra: NodeJS.ProcessEnv = {}) => JSON.parse((await exec(process.execPath, [join(coreDir, 'scripts/admin.mjs'), ...args], { cwd: coreDir, env: { ...env, ...extra }, timeout: 20000 })).stdout) as { token: string };
     const app = (name: string) => tool(['application', name], { PRIVANET_JOB_TYPES: 'web.fetch.v1', PRIVANET_FETCH_PRODUCT: identity.product, PRIVANET_FETCH_INFO_URL: identity.infoUrl });
     const demand = await app('privasearch-demand'); const pub = await app('privasearch-public');
@@ -74,7 +76,13 @@ export async function startCore(coreDir: string, options: { identity?: Identity;
       nodes.push(await start('apps/node/dist/main.js', { PRIVANODE_ENROLLMENT_TOKEN: grant.token, PRIVANODE_STATE_DIR: join(dir, `node${i}`) }, 'node.enrolled', i + 1));
     }
     const node = nodes[0]; if (!node) throw new Error('no node started');
-    return { url, pids: { coordinator: coordinator.pid ?? 0, node: node.pid ?? 0, nodes: nodes.map(n => n.pid ?? 0) }, dataDir: dir, tokens: { DEMAND: demand.token, PUBLIC: pub.token }, identity, logs, stop };
+    return { url, pids: { coordinator: coordinator.pid ?? 0, node: node.pid ?? 0, nodes: nodes.map(n => n.pid ?? 0) }, dataDir: dir, tokens: { DEMAND: demand.token, PUBLIC: pub.token }, identity, logs,
+      restartCoordinator: async (downMs = 1500) => {
+        const exited = new Promise<void>(resolve => { if (coordinator.exitCode !== null) resolve(); else coordinator.once('exit', () => resolve()); });
+        coordinator.kill('SIGKILL'); await exited; await new Promise<void>(resolve => setTimeout(resolve, downMs));
+        const seen = logs.join('').split('"event":"coordinator.started"').length - 1;
+        coordinator = await start('apps/coordinator/dist/main.js', {}, 'coordinator.started', seen + 1);
+      }, stop };
   } catch (error) { await stop(); throw error; }
 }
 
