@@ -10,7 +10,7 @@ import { Crawler } from '../src/driver.js';
 import { DocumentStore } from '../src/documents.js';
 import { Frontier } from '../src/frontier.js';
 import { PrivaNetTransport } from '../src/privanet/privanet-transport.js';
-import { canBindPort80, startCore, startSite } from './core-rig.js';
+import { realPathSkip, startCore, startSite } from './core-rig.js';
 
 /**
  * The real path, end to end: PrivaSearch → @privanet/sdk → Coordinator → authenticated PrivaNode → web.fetch.v1 →
@@ -18,7 +18,7 @@ import { canBindPort80, startCore, startSite } from './core-rig.js';
  * permission to listen on 127.0.0.1:80 (PrivaSearch only crawls default ports); otherwise it is skipped, loudly.
  */
 const core = process.env.PRIVANET_CORE_DIR;
-const skip = !core ? 'set PRIVANET_CORE_DIR to a built PrivaNet-Core checkout' : (await canBindPort80()) ? false : 'cannot listen on 127.0.0.1:80';
+const skip = await realPathSkip();
 
 const HOST = 'site.example';
 const page = (title: string, body: string, links: string[] = [], head = '') => ({ body: `<!doctype html><html lang="en"><head><title>${title}</title>${head}</head><body><p>${body}</p>${links.map(l => `<a href="${l}">l</a>`).join('')}</body></html>` });

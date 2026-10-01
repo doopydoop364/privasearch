@@ -103,3 +103,13 @@ export async function startSite(pages: (host: string, path: string) => { status?
 export async function canBindPort80(): Promise<boolean> {
   try { const s = await startSite(() => undefined); await s.close(); return true; } catch { return false; }
 }
+/**
+ * Why the real-path tests cannot run here, or `false` when they can. Without a built PrivaNet-Core checkout or the right to listen on port 80 they are skipped, and
+ * node:test reports a skip as a pass. A job that exists to run them (CI's real-path) sets PRIVASEARCH_REQUIRE_REAL_PATH=1, which turns a skip into a failure, so a
+ * broken setup step can never leave that job green with none of the end-to-end coverage.
+ */
+export async function realPathSkip(): Promise<string | false> {
+  const reason = !process.env.PRIVANET_CORE_DIR ? 'set PRIVANET_CORE_DIR to a built PrivaNet-Core checkout' : (await canBindPort80()) ? false : 'cannot listen on 127.0.0.1:80';
+  if (reason && process.env.PRIVASEARCH_REQUIRE_REAL_PATH === '1') throw new Error(`the real-path tests are required (PRIVASEARCH_REQUIRE_REAL_PATH=1) but cannot run: ${reason}`);
+  return reason;
+}
