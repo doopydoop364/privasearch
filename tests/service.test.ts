@@ -143,3 +143,13 @@ test('at start the service forgets ledger entries older than 90 days, keeps rece
   assert.equal(s.planner?.stats().queries, 1);
   assert.deepEqual(events.find(e => e.event === 'service.ledger_pruned'), { event: 'service.ledger_pruned', removed: 2 });
 });
+
+test('an unusable Coordinator address is a configuration error naming the setting (exit status 78, no restart loop), never an unexplained start failure, and the address is not echoed', () => {
+  const tokens = { PRIVANET_DEMAND_TOKEN: 'a'.repeat(64), PRIVANET_PUBLIC_TOKEN: 'b'.repeat(64) };
+  for (const url of ['http://coordinator.lan:4010', 'coordinator.example', 'https://user:hunter2@coordinator.example', 'ftp://coordinator.example', 'https://coordinator.example/some/path', 'http://127.0.0.1:4010']) {
+    try { parseServiceConfig({ PRIVANET_COORDINATOR_URL: url, ...tokens }); assert.fail(`expected ${url} to be refused`); }
+    catch (error) { assert.ok(error instanceof ConfigError, url); assert.deepEqual(error.names, ['PRIVANET_COORDINATOR_URL']); assert.equal(error.message.includes('hunter2') || error.message.includes('coordinator'), false, 'the address is not echoed'); }
+  }
+  assert.equal(parseServiceConfig({ PRIVANET_COORDINATOR_URL: 'https://coordinator.example', ...tokens }).privanet?.coordinatorUrl, 'https://coordinator.example');
+  assert.equal(parseServiceConfig({ PRIVANET_COORDINATOR_URL: 'http://127.0.0.1:4010', PRIVASEARCH_ALLOW_INSECURE_LOOPBACK: 'true', ...tokens }).privanet?.allowInsecureLoopback, true, 'loopback http only with the explicit flag');
+});
