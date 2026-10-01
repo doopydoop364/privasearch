@@ -36,7 +36,7 @@ From a release archive (`privasearch-<version>.tar.gz`) or a checkout (`npm ci &
 ```sh
 sudo useradd --system --home-dir /var/lib/privasearch --shell /usr/sbin/nologin privasearch
 sudo mkdir -p /opt/privasearch /etc/privasearch
-sudo tar -xzf privasearch-0.4.0.tar.gz -C /opt && sudo mv /opt/privasearch-0.4.0/* /opt/privasearch/
+sudo tar -xzf privasearch-0.4.1.tar.gz -C /opt && sudo mv /opt/privasearch-0.4.1/* /opt/privasearch/
 (cd /opt/privasearch && sudo /opt/node/bin/npm ci --omit=dev)
 sudo install -m 0600 -o root -g root /opt/privasearch/deploy/env/privasearch.env.example /etc/privasearch/privasearch.env
 sudo install -m 0644 /opt/privasearch/deploy/seeds.example.txt /etc/privasearch/seeds.txt

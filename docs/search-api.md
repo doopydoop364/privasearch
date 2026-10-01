@@ -13,7 +13,7 @@ By default the service binds to `127.0.0.1` and needs no token. If `PRIVASEARCH_
 ## `GET /health`
 
 ```json
-{ "status": "ok", "apiVersion": 1, "version": "0.4.0", "documents": 120, "indexed": 118, "duplicates": 2, "crawling": true }
+{ "status": "ok", "apiVersion": 1, "version": "0.4.1", "documents": 120, "indexed": 118, "duplicates": 2, "crawling": true }
 ```
 
 ## `GET /search`
