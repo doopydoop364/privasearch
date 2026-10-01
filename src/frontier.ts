@@ -210,6 +210,8 @@ export class Frontier {
     for (const row of this.db.prepare('SELECT state, COUNT(*) AS n FROM urls GROUP BY state').all() as unknown as Array<{ state: State; n: number }>) out[row.state] = Number(row.n);
     return out;
   }
+  /** The demand backlog alone (the planner asks on every weak search; `detail` also counts hosts and due recrawls, which scans the whole frontier). */
+  pendingDemand(): number { return Number((this.db.prepare(`SELECT COUNT(*) AS n FROM urls INDEXED BY urls_pending_demand WHERE state='PENDING' AND queue='DEMAND'`).get() as { n: number }).n); }
   /** Counts for operators: the demand backlog, background backlog, and recrawls that are due now. */
   detail(now: number): { pendingDemand: number; pendingPublic: number; recrawlDue: number; hosts: number } {
     const n = (sql: string, ...args: number[]) => Number((this.db.prepare(sql).get(...args) as { n: number }).n);
