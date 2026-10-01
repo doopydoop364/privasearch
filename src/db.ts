@@ -9,7 +9,7 @@ import { urlKey } from './url.js';
  * component can call it from its constructor and an upgrade never needs a manual step.
  *
  * Schema version 2 (0.4.0) adds: documents.{canonical_key, host, first_seen_at, last_changed_at, change_count}, the `links` table,
- * urls.{interval_ms, change_count, unchanged_streak, last_changed_at}, and the `queries` table.
+ * urls.{interval_ms, change_count, unchanged_streak, last_changed_at}, the `queries` table and a small `meta` table (a per-install salt for query hashes).
  */
 export const SCHEMA_VERSION = 2;
 
@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS links (
   PRIMARY KEY (src_key, dst_key)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS links_dst ON links(dst_key);
+CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL) STRICT;
 -- The demand-crawl ledger. A query is stored only as a hash of its normalised terms, never as text.
 CREATE TABLE IF NOT EXISTS queries (
   qkey TEXT PRIMARY KEY, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL, times_seen INTEGER NOT NULL DEFAULT 1,
