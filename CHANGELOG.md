@@ -2,15 +2,28 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-01
+
+PrivaSearch becomes a continuously operating search engine. Core is unchanged: this release consumes `@privanet/*` `0.3.0-alpha.5` (and works against PrivaNet-Core `v0.3.0-alpha.5` and `alpha.6`). Details and the audit that preceded it: [docs/phase3-audit.md](docs/phase3-audit.md).
+
+### Added
+- **A long-running service** (`npm start`, `node dist/main.js`): the search API, a supervised background crawler and demand crawling in one process over one database; seeds added at start, leases from the previous process returned, graceful shutdown with a deadline, search-only mode when no PrivaNet settings are present, settings errors reported by name with exit status 78. `deploy/`: a hardened systemd unit, an environment template without secrets and an example seed list; shipped in the release archive, whose smoke test now starts the service. See [docs/deployment.md](docs/deployment.md).
+- **Demand crawling.** A search for which the index has fewer than three strong results schedules related crawling at demand priority without waiting for it. Cooldown (30 minutes, doubling while a query stays weak, at most 24 hours), a queue limit and an hourly limit prevent crawl storms. Query-to-URL discovery from the frontier, the link graph and operator-configured URL templates; no search-provider client, every fetch through `web.fetch.v1`. A query is stored only as a salted hash. See [docs/crawling.md](docs/crawling.md).
+- **Search API 1.** `GET /search` with `limit`/`offset`, relevance signals per hit, `index` and `crawl` state; `GET /status`; optional bearer token (`PRIVASEARCH_API_TOKEN`, required off loopback). See [docs/search-api.md](docs/search-api.md).
+- **Ranking.** Relevance, title, address, description, exact phrase, term coverage (partial matches fill out thin results), freshness, inbound-host link authority, canonical and URL-variant suppression, host diversity; deterministic. See [docs/ranking.md](docs/ranking.md).
+- **Persistent index additions.** A link graph, canonical-URL deduplication, change tracking (first seen, last changed, change count), `src/db.ts` with in-place migration of 0.3.2 databases (`user_version` 2).
+- **Adaptive recrawl.** Per-URL intervals: halved when the content hash changed, doubled when unchanged or `304` (up to 60 days, 14 for pages many hosts link to); a reserved share (25 %) of every lease goes to due recrawls.
+- **Crawl-trap guard and per-host budget** for discovered links (calendars, session and filter parameters, repeating paths, deep pagination; 2,000 discovered URLs per host); discovery priority by depth.
+- Tests: restart persistence, migration, ranking signals, demand heuristics and storm protection, API shape and auth, recrawl, traps, rate limits, robots, outage recovery, hard-stop shutdown, deploy files, and the whole loop against a real Coordinator and PrivaNode (`tests/service-e2e.test.ts`).
+- `tests/dependencies.test.ts`: an offline guard that the `@privanet` dependencies are exact registry versions, that `@privanet/shared` is only transitive, and that the lockfile resolves all three from `registry.npmjs.org` at one matching version with no release-asset URL or `file:` link.
+
 ### Changed
 - **`@privanet/*` now come from public npm.** `package.json` depends on `@privanet/protocol` and `@privanet/sdk` at the exact version `0.3.0-alpha.5` instead of PrivaNet-Core release-asset URLs, and `package-lock.json` is regenerated from the registry. `@privanet/shared` is no longer a direct dependency: PrivaSearch never imported it, and it is installed transitively through the SDK at the same version.
 - CI and the release workflow no longer rely on the release-asset URLs. They still check out PrivaNet-Core `v0.3.0-alpha.5` and build it, because the real-path tests and the measured crawl need a genuine Coordinator and PrivaNode (release archives, not npm packages); `PRIVANET_CORE_DIR` still points the tests at any local checkout.
-- No version bump: PrivaSearch is not published to npm, and the `0.3.2` archive keeps working. The next release carries this.
-
-### Added
-- `tests/dependencies.test.ts`: an offline guard that the `@privanet` dependencies are exact registry versions, that `@privanet/shared` is only transitive, and that the lockfile resolves all three from `registry.npmjs.org` at one matching version with no release-asset URL or `file:` link.
-
-## [Unreleased]
+- `src/main.ts` is now the service (it was an API-only entry point); without PrivaNet settings it behaves as before. `npm run serve` still points at it.
+- A URL that exhausted its attempts (`FAILED`) is retried after 30 days and after everything else, instead of never. A URL asked for by demand while it is waiting out a failure backoff is not made due early. A recrawl uses the public credential even for a URL first queued as demand.
+- The upsert result reports `changed` and `firstSeen`; removing a page promotes a duplicate of it; `count()` is unchanged (`linkCount()` is new).
+- Tests run one file at a time (`--test-concurrency=1`): two of them need port 80.
 
 ## [0.3.2] - 2026-09-30
 

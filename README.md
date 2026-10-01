@@ -2,51 +2,44 @@
 
 An independent, self-hostable web search engine. PrivaSearch is a **separate application** that consumes [PrivaNet](https://github.com/doopydoop364/PrivaNet-Core): it never fetches pages itself. Every crawl is meant to go **PrivaSearch, PrivaNet SDK, Coordinator, authenticated PrivaNode, fetch capability, validated result**, even on a single machine. PrivaNet-Core contains no PrivaSearch code and this repository contains no PrivaNet internals.
 
-## Status: milestone 2, the real PrivaNet path works
+## What it does (0.4.0)
 
-**Read this before assuming anything works beyond what is listed.**
+PrivaSearch is a continuously operating search engine. One long-running service serves a search API, crawls in the background without being asked, and, when a search finds too little, schedules related crawling and improves its answer as pages arrive. A user reaches it through [PrivaProxy](https://github.com/doopydoop364/privaproxy): choose "PrivaSearch" in its search-engine dropdown.
+
+```text
+PrivaProxy ──> search API ──> ranked results now, from the index as it is
+                   │
+                   └─ results thin? ──> demand planner ──> frontier (DEMAND, high priority)
+seeds, discovered links, recrawls ───────────────────────> frontier (PUBLIC)
+                                                              │
+        crawler ──> PrivaNetTransport ──> @privanet/sdk ──> Coordinator ──> PrivaNode (web.fetch.v1)
+           │
+           └─ validate ─> parse ─> index (FTS5) + link graph ─> back into the frontier and the next search
+```
 
 | Part | State |
 | --- | --- |
-| Frontier (SQLite): URL admission, per-host politeness, backoff, recrawl, both queues | Implemented and tested |
-| Result validation against the schemas from `@privanet/protocol` (untrusted results, all 12 outcomes) | Implemented and tested |
-| Crawl driver: lease, submit, validate, ingest, discover | Implemented and tested against the test double **and** the real path |
-| `PrivaNetTransport` (`@privanet/sdk`): credential per queue, idempotent resubmission, error translation | Implemented and tested |
-| Real path: SDK, Coordinator, authenticated PrivaNode, `web.fetch.v1`, validated result, index, search hit | Proven end to end against a **local test site** (`tests/core-e2e.test.ts`, needs a PrivaNet-Core checkout); public-URL proof runs in CI (`live-public-url` job) |
-| Measured crawl on a synthetic local site: 10, 100, 1,000 pages | Measured once, see [docs/measurements.md](docs/measurements.md). Not the public web, not 10,000 |
-| Document store, FTS5 index, ranking (BM25), duplicate handling, noindex | Implemented and tested |
-| Search API (`GET /search?q=`, JSON only) | Implemented and tested; no UI |
-| `npm run crawl`: continuous pipeline through PrivaNet from seeds, clean stop | Implemented and tested end to end against a real Coordinator and node |
-| Parsing beyond PrivaNet's digest, ranking beyond BM25, metasearch, UI, third-party nodes | Not started |
+| Persistent index (SQLite + FTS5): URL, canonical URL, title, description, text, hashes, fetch and change times, link graph; migrates older databases in place | Implemented and tested |
+| Search API with ranking, pagination, relevance signals, index and crawl state, optional bearer token ([docs/search-api.md](docs/search-api.md)) | Implemented and tested |
+| Ranking: relevance, title, address, description, exact phrase, term coverage, freshness, inbound-host links, variant suppression, host diversity ([docs/ranking.md](docs/ranking.md)) | Implemented and tested; weights not tuned on a judged query set |
+| Demand crawling: a documented "weak results" rule, cooldowns that double while a query stays weak, queue and hourly limits, query-to-URL discovery ([docs/crawling.md](docs/crawling.md)) | Implemented and tested, including against a real Coordinator and node |
+| Background crawler: persistent frontier, per-host politeness, `Retry-After`, backoff, depth and priority, crawl-trap guard, per-host budget | Implemented and tested |
+| Adaptive recrawl from content-hash changes, `304`s and link importance; rare retries of failed URLs | Implemented and tested |
+| Long-running service: graceful shutdown, restart persistence, outage recovery, search-only mode, systemd unit ([docs/deployment.md](docs/deployment.md)) | Implemented and tested |
+| Real path: SDK, Coordinator, authenticated PrivaNode, `web.fetch.v1`, index, search hit, recrawl | Proven end to end against a **local test site** (`tests/service-e2e.test.ts`, needs a PrivaNet-Core checkout); one public URL is proven in CI |
+| Crawling the public web at scale, third-party nodes, anchor text, sitemaps, JavaScript rendering, distributed storage | Not done ([docs/crawling.md](docs/crawling.md#limitations-known-not-hidden)) |
 
-PrivaSearch makes **no HTTP request to a crawled URL itself**. The only way out is `PrivaNetTransport`; `FakeTransport` is the test double and never touches the network. The fetch contract is imported from `@privanet/protocol`; there is no local copy.
+PrivaSearch makes **no HTTP request to a crawled URL itself**, and no request to a search provider. The only way out is `PrivaNetTransport`; there is no shortcut for a node on the same machine. `FakeTransport` is the unit-test double and never touches the network. The fetch contract is imported from `@privanet/protocol`; there is no local copy. Nothing has crawled the public web at scale: the measurements in [docs/measurements.md](docs/measurements.md) are against local test sites.
 
-Nothing has crawled the public web at scale. The 1,000-page figure is a local, synthetic, single-node measurement that relaxes the node's SSRF policy for the test host only (a node-owner setting that exists solely for local testing).
-
-## How it fits together
-
-```text
-frontier (what, when, how politely)  ->  Crawler  ->  FetchTransport  ->  [PrivaNet path]
-      ^                                    |               (PrivaNetTransport via @privanet/sdk; FakeTransport in unit tests)
-      |                                    v
-  discovered links  <-  validated result  ->  DocumentStore + FTS5  ->  search API
-```
-
-- `src/privanet/contract.ts`: re-exports the authoritative schemas from `@privanet/protocol` and holds the capability id in one constant. No copy of the contract.
-- `src/privanet/privanet-transport.ts`: the real transport over `@privanet/sdk`.
-- `src/privanet/transport.ts`: the single port to PrivaNet. The result type is `unknown` on purpose.
-- `src/privanet/fake-transport.ts`: test double only.
-- `tests/core-rig.ts`, `tests/core-e2e.test.ts`, `tests/scale-crawl.ts`, `tests/live-url.ts`: a black-box rig that runs a real Coordinator and PrivaNode from a PrivaNet-Core checkout.
-- `src/url.ts`, `src/frontier.ts`, `src/driver.ts`, `src/documents.ts`, `src/server.ts`.
-
-Details: [docs/architecture.md](docs/architecture.md), [docs/integration.md](docs/integration.md).
+Code map (`src/`): `service.ts` (the process), `server.ts` (API), `ranking.ts`, `demand.ts` and `discovery.ts` (demand crawling), `frontier.ts` and `policy.ts` (what to crawl, when, how politely), `driver.ts` (the crawler), `documents.ts` and `db.ts` (index, link graph, schema and migration), `url.ts` (admission), `privanet/` (the transport port). Design notes: [docs/architecture.md](docs/architecture.md), [docs/phase3-audit.md](docs/phase3-audit.md), [docs/integration.md](docs/integration.md).
 
 ## Security posture
 
 - Results come from untrusted nodes. Every result is schema-validated and cross-checked (requested URL, final host, outcome-specific fields) before use; an invalid result is a failed attempt and nothing in it is stored or followed.
 - Page text is data. It is stored and returned verbatim, never interpreted. Search input is reduced to quoted terms. API consumers must escape hit text before rendering it.
-- No user identifiers or queries enter any job, and nothing is logged per query.
-- The frontier is the primary politeness limiter; PrivaNet's node limits are defence in depth.
+- No user identifiers or queries enter any job, and nothing is logged per query. The demand ledger keeps only a salted hash of each normalised query, never its text.
+- The frontier is the primary politeness limiter; PrivaNet's node limits are defence in depth. Crawl traps and a per-host budget bound what a hostile site can make the crawler queue.
+- The search API binds to loopback by default and requires a bearer token when it does not; PrivaNet credentials never leave the process.
 - No independent security review has been done. Passing tests is not a security claim.
 
 ## License
@@ -65,19 +58,19 @@ npm run lint
 npm run typecheck
 ```
 
-`npm run serve` serves the search API over an existing database (`PRIVASEARCH_DB`, default `./var/privasearch.sqlite`, on `127.0.0.1:4020`). It does not crawl.
-
-`npm run crawl` crawls through PrivaNet until stopped (SIGINT or SIGTERM), writing to the same database. It needs a running PrivaNet Coordinator with at least one PrivaNode that offers `web.fetch.v1`, and two application credentials issued by the PrivaNet administrator (one per queue, each with a registered fetch identity):
+`npm start` (or `node dist/main.js` from a release archive) runs the whole service; see [docs/deployment.md](docs/deployment.md) for settings, the systemd unit and PrivaProxy configuration. With no PrivaNet settings it is search-only. A minimal local run against a Coordinator and a node that offers `web.fetch.v1`:
 
 ```bash
 export PRIVANET_COORDINATOR_URL=https://coordinator.example
 export PRIVANET_DEMAND_TOKEN=<64 hex>   # never on the command line
 export PRIVANET_PUBLIC_TOKEN=<64 hex>   # a different credential
-export PRIVASEARCH_SEEDS=./seeds.txt    # optional: one URL per line, # comments; URLs may also be arguments
-npm run crawl -- https://example.com/
+export PRIVASEARCH_SEEDS=./seeds.txt    # one URL per line, # comments
+export PRIVASEARCH_DISCOVERY_TEMPLATES='https://en.wikipedia.org/wiki/{title}'
+npm start
+curl 'http://127.0.0.1:4020/search?q=alpine+hiking'
 ```
 
-Options (environment): `PRIVASEARCH_DB`, `PRIVASEARCH_CONCURRENCY` (default 32, at most one URL per host is ever in flight), `PRIVASEARCH_SEED_QUEUE` (`PUBLIC` default, or `DEMAND`), `PRIVASEARCH_WAIT_TIMEOUT_MS`, `PRIVASEARCH_POLL_MS`, `PRIVASEARCH_ALLOW_INSECURE_LOOPBACK=true` (development only). Logs are aggregate counts: no URL, query or credential is written.
+`npm run serve` is the same service (without PrivaNet settings it only serves the index, as before). `npm run crawl` is the older crawl-only command (frontier, crawler and transport, no API); it uses the same database and remains for compatibility.
 
 The real-path tests need a built PrivaNet-Core checkout and permission to listen on `127.0.0.1:80` (PrivaSearch crawls default ports only); without them they are skipped:
 
