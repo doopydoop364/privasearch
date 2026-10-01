@@ -14,6 +14,8 @@ export interface DriverOptions {
   batch?: number;
   /** Longest wait after PrivaNet could not be reached (default 60 s); the wait starts at `infrastructureBackoffBaseMs` and doubles while it stays unreachable. */
   infrastructureRetryMs?: number; infrastructureBackoffBaseMs?: number;
+  /** Aborting this gives up on every submitted job still waiting for its result (shutdown past its deadline); each URL is released and resubmitted under the same key later. */
+  hardStop?: AbortSignal;
 }
 export interface PassSummary {
   submitted: number; outcomes: Partial<Record<FetchResult['outcome'], number>>;
@@ -88,7 +90,7 @@ export class Crawler {
     try {
       raw = await this.o.transport.fetch({
         input: { url: item.url, mode: 'DIGEST', ...(item.validators ? { validators: item.validators } : {}) },
-        idempotencyKey: idempotencyKeyFor(item.url, item.generation), queue: item.queue,
+        idempotencyKey: idempotencyKeyFor(item.url, item.generation), queue: item.queue, ...(this.o.hardStop ? { signal: this.o.hardStop } : {}),
       });
     } catch (error) {
       summary.transportErrors++;

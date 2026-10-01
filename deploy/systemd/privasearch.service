@@ -1,0 +1,48 @@
+# PrivaSearch: search API, background crawler and demand crawling in one process (docs/deployment.md).
+# Install: sudo cp deploy/systemd/privasearch.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now privasearch
+# Settings live in /etc/privasearch/privasearch.env (mode 0600, owned by root), never in this unit.
+[Unit]
+Description=PrivaSearch (search API, background crawler, demand crawling)
+Documentation=https://github.com/doopydoop364/privasearch
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=privasearch
+Group=privasearch
+WorkingDirectory=/opt/privasearch
+EnvironmentFile=/etc/privasearch/privasearch.env
+ExecStart=/opt/node/bin/node /opt/privasearch/dist/main.js
+Restart=on-failure
+RestartSec=10
+# A configuration mistake exits with status 78: report it once instead of restarting in a loop.
+RestartPreventExitStatus=78
+# SIGTERM starts a graceful stop (PRIVASEARCH_SHUTDOWN_MS, default 15 s, then fetches still waiting are given up and their URLs returned to the frontier).
+KillSignal=SIGTERM
+TimeoutStopSec=45
+# The database lives in /var/lib/privasearch (PRIVASEARCH_DB=/var/lib/privasearch/privasearch.sqlite).
+StateDirectory=privasearch
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/privasearch
+
+[Install]
+WantedBy=multi-user.target

@@ -50,14 +50,19 @@ jobs:
           mkdir -p "$d" out
           cp -r dist/src "$d/dist"
           cp LICENSE package.json package-lock.json README.md CHANGELOG.md ROADMAP.md "$d"/
-          cp -r docs "$d/docs"
-          printf 'Run: npm ci --omit=dev && PRIVASEARCH_DB=./var/privasearch.sqlite node dist/main.js\n(Node >= 24.4. Needs a PrivaNet-Core %s Coordinator and node to crawl; see README.)\n' "$PRIVANET_CORE_REF" > "$d/RUNNING.txt"
+          cp -r docs "$d/docs"; cp -r deploy "$d/deploy"
+          printf 'Run: npm ci --omit=dev && PRIVASEARCH_DB=./var/privasearch.sqlite node dist/main.js\n(Node >= 24.4. Needs a PrivaNet-Core %s Coordinator and node to crawl; see README, docs/deployment.md and deploy/ for the service unit and settings.)\n' "$PRIVANET_CORE_REF" > "$d/RUNNING.txt"
           tar -czf "out/$d.tar.gz" "$d"
           (cd out && sha256sum * > SHA256SUMS.txt)
       - name: Smoke-test the staged distribution
         run: |
           d="privasearch-${RELEASE_TAG#v}"; tar -xzf "out/$d.tar.gz" -C /tmp
           cd "/tmp/$d" && npm ci --omit=dev >/dev/null && node --input-type=module -e "import('./dist/privanet/privanet-transport.js').then(m => { if (typeof m.PrivaNetTransport !== 'function') process.exit(1); }); import('./dist/documents.js')"
+          # The shipped service starts (search-only, no PrivaNet settings), answers, reports its version, and stops gracefully on SIGTERM.
+          PRIVASEARCH_DB=/tmp/privasearch-smoke/db.sqlite PRIVASEARCH_PORT=4999 node dist/main.js > /tmp/privasearch-smoke.log 2>&1 & pid=$!
+          for i in $(seq 1 50); do curl -fs http://127.0.0.1:4999/health > /tmp/health.json && break; sleep 0.2; done
+          node -e "const h=JSON.parse(require('fs').readFileSync('/tmp/health.json','utf8')); if (h.status!=='ok' || h.version!==process.argv[1]) { console.error(h); process.exit(1); }" "${RELEASE_TAG#v}"
+          kill -TERM $pid; wait $pid
       - name: Release notes and publish
         env:
           GH_TOKEN: ${{ github.token }}

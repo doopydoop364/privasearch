@@ -1,11 +1,20 @@
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
-import { DocumentStore } from './documents.js';
-import { createSearchServer } from './server.js';
+import { readFileSync } from 'node:fs';
+import { ConfigError, parseServiceConfig } from './service-config.js';
+import { startService } from './service.js';
 
-// Serves the search API over an existing PrivaSearch database. Crawling is not wired to PrivaNet yet (see README).
-const path = process.env.PRIVASEARCH_DB ?? './var/privasearch.sqlite';
-mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-const server = createSearchServer(new DocumentStore(new DatabaseSync(path)));
-server.listen(Number(process.env.PRIVASEARCH_PORT ?? 4020), process.env.PRIVASEARCH_HOST ?? '127.0.0.1', () => console.log(JSON.stringify({ event: 'search.started' })));
+// The PrivaSearch service: search API, background crawler and demand crawling in one long-running process (docs/deployment.md).
+// Settings come from environment variables only; an invalid one is reported by NAME, never by value, and exits with status 78 (EX_CONFIG) so
+// a service manager that honours RestartPreventExitStatus=78 does not restart-loop on a configuration mistake.
+const EXIT_CONFIG = 78;
+const seedFile = process.env.PRIVASEARCH_SEEDS;
+let config;
+try { config = parseServiceConfig(process.env, seedFile ? readFileSync(seedFile, 'utf8') : undefined); }
+catch (error) {
+  const names = error instanceof ConfigError ? error.names : ['PRIVASEARCH_SEEDS'];
+  console.error(JSON.stringify({ event: 'service.config_invalid', settings: names, reason: error instanceof ConfigError ? error.message : 'the seed file could not be read' }));
+  process.exit(EXIT_CONFIG);
+}
+let service;
+try { service = await startService(config); }
+catch (error) { console.error(JSON.stringify({ event: 'service.start_failed', reason: (error as NodeJS.ErrnoException).code ?? 'ERROR' })); process.exit(1); }
+for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => { void service.stop().then(() => process.exit(0)); });

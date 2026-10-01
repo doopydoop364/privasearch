@@ -1,0 +1,6 @@
+# Starting points for the background crawler: one URL per line. These are only examples; choose sites you are happy for your crawler to visit.
+# Every fetch goes through PrivaNet and obeys robots.txt, the per-host delay and the crawl-trap limits. Only default ports are crawled.
+https://en.wikipedia.org/wiki/Main_Page
+https://developer.mozilla.org/en-US/
+https://docs.python.org/3/
+https://nodejs.org/en/learn
