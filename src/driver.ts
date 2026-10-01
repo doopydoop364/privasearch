@@ -96,6 +96,10 @@ export class Crawler {
       summary.transportErrors++;
       // No result was obtained: not the URL's fault. Keep the generation so a resubmission is deduplicated by PrivaNet.
       const now = this.clock();
+      // A job that FAILED inside PrivaNet is a finished answer about this URL, not an outage: PrivaNet is reachable and resubmitting the same key would only replay the
+      // same failed job for ever (and every replay would open the "unreachable" window and stall all other crawling). It counts as a failed attempt, with backoff, and
+      // the next attempt gets a new generation and therefore a new job.
+      if (error instanceof TransportError && error.code === 'JOB_FAILED') { this.o.frontier.fail(item.urlKey, now, 'JOB_FAILED'); return; }
       const delay = error instanceof TransportError && !error.retryable ? this.infraRetryMs * 10 : this.infrastructureDelay(now);
       this.o.frontier.release(item.urlKey, now, delay); return;
     }
