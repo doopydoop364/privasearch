@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Changed
+- **`@privanet/*` now come from public npm.** `package.json` depends on `@privanet/protocol` and `@privanet/sdk` at the exact version `0.3.0-alpha.5` instead of PrivaNet-Core release-asset URLs, and `package-lock.json` is regenerated from the registry. `@privanet/shared` is no longer a direct dependency: PrivaSearch never imported it, and it is installed transitively through the SDK at the same version.
+- CI and the release workflow no longer rely on the release-asset URLs. They still check out PrivaNet-Core `v0.3.0-alpha.5` and build it, because the real-path tests and the measured crawl need a genuine Coordinator and PrivaNode (release archives, not npm packages); `PRIVANET_CORE_DIR` still points the tests at any local checkout.
+- No version bump: PrivaSearch is not published to npm, and the `0.3.2` archive keeps working. The next release carries this.
+
+### Added
+- `tests/dependencies.test.ts`: an offline guard that the `@privanet` dependencies are exact registry versions, that `@privanet/shared` is only transitive, and that the lockfile resolves all three from `registry.npmjs.org` at one matching version with no release-asset URL or `file:` link.
+
+## [Unreleased]
+
 ## [0.3.2] - 2026-09-30
 
 Consumes PrivaNet-Core v0.3.0-alpha.5 and fixes a stall found by running PrivaSearch on a desktop against a server Coordinator.

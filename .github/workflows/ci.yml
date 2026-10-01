@@ -24,6 +24,8 @@ jobs:
       - run: npm run build
 
   # The real path: a genuine Coordinator and PrivaNode from a PrivaNet-Core release, driven through @privanet/sdk.
+  # The @privanet packages themselves come from public npm (npm ci); the Core checkout is only the Coordinator/node runtime,
+  # which is a release archive and not an npm package.
   real-path:
     runs-on: ubuntu-latest
     env:
