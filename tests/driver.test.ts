@@ -184,6 +184,23 @@ test('while PrivaNet stays unreachable the pipeline backs off and does not churn
   assert.ok(r.transport.calls.length >= 4 && r.transport.calls.length <= 12, `${r.transport.calls.length} submissions while unreachable`);
 });
 
+test('a job that failed inside PrivaNet is this URL\'s failure: it gets a new idempotency key and a backoff, and does not stall the rest of the crawl', async () => {
+  const r = rig(input => { if (input.url.includes('bad.example')) throw new TransportError('JOB_FAILED', true); return pageResult(input.url, r.time.now, { title: 'ok', text: 'fine page' }, { contentSha256: 'b'.repeat(64) }); }, { hostDelayMs: 0, backoffBaseMs: 1000 });
+  r.frontier.add('https://bad.example/p', { queue: 'PUBLIC' }, r.time.now);
+  const first = await r.crawler.runOnce();
+  const bad = r.frontier.getByUrl('https://bad.example/p');
+  assert.deepEqual([first.transportErrors, bad?.state, bad?.attempts, bad?.generation, bad?.last_outcome], [1, 'PENDING', 1, 1, 'JOB_FAILED'], 'a counted attempt, a new generation, not just handed back');
+  // PrivaNet is fine (it answered); the crawler must go on with other work at once instead of waiting out an "unreachable" window for this URL.
+  r.frontier.add('https://good.example/p', { queue: 'PUBLIC' }, r.time.now);
+  const stop = AbortSignal.timeout(1500);
+  await r.crawler.run({ concurrency: 2, signal: stop, idleMs: 1, until: () => r.transport.calls.some(c => c.input.url.includes('good.example')) });
+  assert.equal(r.transport.calls.some(c => c.input.url.includes('good.example')), true, 'other URLs are not held back');
+  // After its backoff the same URL is submitted under a different key, so PrivaNet does not just replay the failed job.
+  r.advance(60_000); await r.crawler.runOnce();
+  const keys = r.transport.calls.filter(c => c.input.url.includes('bad.example')).map(c => c.idempotencyKey);
+  assert.equal(keys.length, 2); assert.notEqual(keys[0], keys[1]);
+});
+
 test('a result and its page are stored together: if the page cannot be stored the URL is not marked done, and it is tried again later', async () => {
   const url = 'https://a.example/page';
   const r = rig(input => pageResult(input.url, r.time.now, { title: 'Stored page', text: 'words that must become searchable' }, { contentSha256: 'a'.repeat(64) }), { hostDelayMs: 0, backoffBaseMs: 1000 });

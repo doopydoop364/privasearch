@@ -17,7 +17,7 @@ Authoritative contract: `docs/PRIVASEARCH_INTEGRATION.md`, `docs/APPLICATION_BOU
 | --- | --- | --- |
 | 429 `QUEUE_LIMIT` | `QUEUE_FULL` | yes, back off |
 | Wait timeout (408) | `TIMEOUT` | yes, same key returns the same job |
-| Job failed inside PrivaNet (409) | `JOB_FAILED` | yes, later |
+| Job failed inside PrivaNet (409) | `JOB_FAILED` | yes: counted as a failed attempt of that URL with backoff, under a new idempotency key (not an outage; other URLs go on) |
 | 5xx, network failure | `UNAVAILABLE` | yes |
 | 401/403 (credential, `JOB_TYPE_FORBIDDEN`, `FETCH_IDENTITY_REQUIRED`), other 4xx | `FORBIDDEN` | no: configuration |
 | 426 protocol mismatch, an answer that violates the schema | `INCOMPATIBLE` | no: upgrade the packages |
