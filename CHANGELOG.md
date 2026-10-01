@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Ingest cost grew with the size of the index.** A page's full-text row was found with `DELETE FROM docs_fts WHERE url_key=?`, but `url_key` is an UNINDEXED FTS5 column, so every ingested page scanned every stored page: loading 2,000 / 4,000 / 8,000 pages took 3.9 / 11.5 / 45 s (quadratic), and the scan blocked the process (search included) while it ran. The row is now addressed by rowid through a new `docs_index` table (schema version 3, migrated in place; a stale duplicate row left by an old database is dropped): 8,000 pages load in 5.6 s and 50,000 in 45 s, linearly.
+- **A page's row, its full-text row and its duplicate bookkeeping were written as separate autocommit statements.** `upsert` and `remove` are now atomic (a savepoint when the caller already holds a transaction), so a failure or a crash can no longer leave a stored page that is not searchable.
+
 ## [0.4.0] - 2026-10-01
 
 PrivaSearch becomes a continuously operating search engine. Core is unchanged: this release consumes `@privanet/*` `0.3.0-alpha.5` (and works against PrivaNet-Core `v0.3.0-alpha.5` and `alpha.6`). Details and the audit that preceded it: [docs/phase3-audit.md](docs/phase3-audit.md).

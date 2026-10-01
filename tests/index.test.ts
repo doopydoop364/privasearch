@@ -108,3 +108,45 @@ test('link graph: replaced on refetch, counted per distinct OTHER host, and remo
   s.setLinks(urlKey('https://b.example/'), 'b.example', []); assert.equal(s.inboundHosts([target]).get(target), 1);
   s.upsert(doc('https://a.example/', 'A', 'a', 1)); s.remove(urlKey('https://a.example/')); assert.equal(s.outlinks(urlKey('https://a.example/')).length, 0);
 });
+
+test('replacing a page replaces its full-text row, including for rows migrated from 0.3.x; a stale duplicate row from an old database is dropped', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'privasearch-mig3-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'v2.sqlite');
+  const db0 = openDatabase(path); // then rewound to look like a 0.4.0 database: no docs_index yet
+  const key = urlKey('https://old.example/page');
+  db0.exec('DROP TABLE docs_index'); db0.exec('PRAGMA user_version=2');
+  db0.prepare('INSERT INTO documents (url_key,url,final_url,title,description,text,content_sha256,fetched_at,http_status,host) VALUES (?,?,?,?,?,?,?,?,?,?)').run(key, 'https://old.example/page', 'https://old.example/page', 'Old', '', 'alpha words', sha(1), 1, 200, 'old.example');
+  db0.prepare('INSERT INTO docs_fts (url_key,title,description,text) VALUES (?,?,?,?)').run(key, 'Old', '', 'alpha words');
+  db0.prepare('INSERT INTO docs_fts (url_key,title,description,text) VALUES (?,?,?,?)').run(key, 'Old', '', 'stale words'); // 0.4.0 could leave this behind
+  db0.close();
+  const db = openDatabase(path); const documents = new DocumentStore(db);
+  assert.equal(documents.count().indexed, 1, 'the stale row is gone and the page is indexed once');
+  documents.upsert(doc('https://old.example/page', 'New', 'omega words', 2));
+  assert.deepEqual([documents.search('alpha').length, documents.search('stale').length, documents.search('omega').map(h => h.title)], [0, 0, ['New']]);
+  assert.equal(documents.count().indexed, 1);
+  documents.remove(key); assert.deepEqual([documents.count().indexed, documents.search('omega').length], [0, 0]);
+  db.close();
+});
+
+test('an upsert is atomic: if indexing it fails, nothing of it is kept, and the same holds inside a caller\'s transaction', () => {
+  const db = openDatabase(':memory:'); const documents = new DocumentStore(db);
+  documents.upsert(doc('https://a.example/1', 'First', 'kept words', 1));
+  db.exec(`CREATE TRIGGER fail_index BEFORE INSERT ON docs_index BEGIN SELECT RAISE(ABORT, 'disk full'); END`);
+  assert.throws(() => documents.upsert(doc('https://a.example/2', 'Second', 'lost words', 2)), /disk full/);
+  assert.deepEqual([documents.get(urlKey('https://a.example/2')), documents.count().documents, documents.count().indexed], [undefined, 1, 1]);
+  db.exec('DROP TRIGGER fail_index');
+  db.exec('BEGIN'); documents.upsert(doc('https://a.example/3', 'Third', 'rolled words', 3)); assert.equal(documents.search('rolled').length, 1); db.exec('ROLLBACK');
+  assert.deepEqual([documents.search('rolled').length, documents.count().documents], [0, 1]);
+  db.close();
+});
+
+test('ingest cost does not grow with the size of the index (the full-text row used to be found by scanning every row)', () => {
+  const db = openDatabase(':memory:'); const documents = new DocumentStore(db);
+  const words = Array.from({ length: 800 }, (_, i) => `w${i.toString(36)}`); let seed = 7; const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32;
+  // Small pages and many of them, so the cost of the scan (one visit per stored page, for every page ingested) dominates the cost of indexing one page.
+  const page = (i: number) => { const text = Array.from({ length: 20 }, () => words[Math.floor(rnd() * words.length)]).join(' '); documents.upsert(doc(`https://h${i % 50}.example/p/${i}`, `Page ${i}`, text, i + 1)); };
+  const timeBatch = (from: number, count: number) => { const start = process.hrtime.bigint(); for (let i = from; i < from + count; i++) page(i); return Number(process.hrtime.bigint() - start) / 1e6 / count; };
+  timeBatch(0, 50); const early = timeBatch(50, 200); timeBatch(250, 7500); const late = timeBatch(7750, 200);
+  assert.ok(late < early * 4 + 0.5, `per-page ingest went from ${early.toFixed(3)} ms to ${late.toFixed(3)} ms as the index grew from 250 to 7,950 pages`);
+  db.close();
+});

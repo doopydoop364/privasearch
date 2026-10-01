@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { initSchema } from './db.js';
+import { initSchema, inTransaction } from './db.js';
 import { parseCrawlUrl, urlKey } from './url.js';
 
 /**
@@ -37,7 +37,8 @@ export class DocumentStore {
    * Stores or refreshes a page. A page whose content is identical to one held under another URL, or whose canonical URL names another page
    * already held, is a duplicate: kept, not indexed. When the canonical page itself arrives later, pages that pointed at it become duplicates.
    */
-  upsert(doc: DocumentInput): UpsertResult {
+  upsert(doc: DocumentInput): UpsertResult { return inTransaction(this.db, () => this.upsertWithin(doc)); }
+  private upsertWithin(doc: DocumentInput): UpsertResult {
     const previous = this.db.prepare('SELECT content_sha256, first_seen_at, last_changed_at, change_count FROM documents WHERE url_key=?').get(doc.urlKey) as
       { content_sha256: string; first_seen_at: number | null; last_changed_at: number | null; change_count: number } | undefined;
     const changed = previous === undefined || previous.content_sha256 !== doc.contentSha256;
@@ -56,11 +57,22 @@ export class DocumentStore {
         change_count=documents.change_count + CASE WHEN ? AND ? THEN 1 ELSE 0 END`)
       .run(doc.urlKey, doc.url, doc.finalUrl, doc.title, doc.description, doc.canonicalUrl, doc.language, doc.text, doc.contentSha256, doc.fetchedAt, doc.httpStatus, original ?? null,
         canonicalKey, host, previous?.first_seen_at ?? doc.fetchedAt, doc.fetchedAt, changed ? 1 : 0, changed ? 1 : 0, previous === undefined ? 0 : 1);
-    this.db.prepare('DELETE FROM docs_fts WHERE url_key=?').run(doc.urlKey);
-    if (original) return { duplicateOf: original, changed, firstSeen: previous === undefined };
-    this.db.prepare('INSERT INTO docs_fts (url_key,title,description,text) VALUES (?,?,?,?)').run(doc.urlKey, doc.title, doc.description, doc.text);
+    if (original) { this.unindex(doc.urlKey); return { duplicateOf: original, changed, firstSeen: previous === undefined }; }
+    this.index(doc.urlKey, doc.title, doc.description, doc.text);
     this.absorbCanonicalDuplicates(doc.urlKey);
     return { changed, firstSeen: previous === undefined };
+  }
+
+  /** Puts (or replaces) a page's full-text row. The row is addressed by rowid through `docs_index`: `docs_fts.url_key` is not indexed, so deleting by it would scan every row. */
+  private index(key: string, title: string, description: string, text: string): void {
+    const existing = this.db.prepare('SELECT id FROM docs_index WHERE url_key=?').get(key) as { id: number } | undefined;
+    let id: number | bigint;
+    if (existing) { id = existing.id; this.db.prepare('DELETE FROM docs_fts WHERE rowid=?').run(id); } else id = this.db.prepare('INSERT INTO docs_index (url_key) VALUES (?)').run(key).lastInsertRowid;
+    this.db.prepare('INSERT INTO docs_fts (rowid,url_key,title,description,text) VALUES (?,?,?,?,?)').run(id, key, title, description, text);
+  }
+  private unindex(key: string): void {
+    const existing = this.db.prepare('SELECT id FROM docs_index WHERE url_key=?').get(key) as { id: number } | undefined; if (!existing) return;
+    this.db.prepare('DELETE FROM docs_fts WHERE rowid=?').run(existing.id); this.db.prepare('DELETE FROM docs_index WHERE id=?').run(existing.id);
   }
 
   /** Pages that named this one as their canonical page stop being separate results (unless doing so would leave a pair with no original). */
@@ -68,7 +80,7 @@ export class DocumentStore {
     const rows = this.db.prepare('SELECT url_key FROM documents WHERE canonical_key=? AND url_key<>? AND duplicate_of IS NULL').all(canonicalKey, canonicalKey) as Array<{ url_key: string }>;
     for (const row of rows) {
       this.db.prepare('UPDATE documents SET duplicate_of=? WHERE url_key=?').run(canonicalKey, row.url_key);
-      this.db.prepare('DELETE FROM docs_fts WHERE url_key=?').run(row.url_key);
+      this.unindex(row.url_key);
     }
   }
 
@@ -89,14 +101,15 @@ export class DocumentStore {
   }
 
   /** Removes a page from the store, the index and the link graph (the site now says noindex, or the page is gone). Pages that were its duplicates are re-evaluated. */
-  remove(urlKey_: string): void {
-    this.db.prepare('DELETE FROM docs_fts WHERE url_key=?').run(urlKey_);
+  remove(urlKey_: string): void { inTransaction(this.db, () => this.removeWithin(urlKey_)); }
+  private removeWithin(urlKey_: string): void {
+    this.unindex(urlKey_);
     this.db.prepare('DELETE FROM documents WHERE url_key=?').run(urlKey_);
     this.db.prepare('DELETE FROM links WHERE src_key=?').run(urlKey_);
     const orphans = this.db.prepare('SELECT url_key, title, description, text FROM documents WHERE duplicate_of=? ORDER BY fetched_at, url_key').all(urlKey_) as unknown as Array<{ url_key: string; title: string; description: string; text: string }>;
     const [first, ...rest] = orphans; if (!first) return;
     this.db.prepare('UPDATE documents SET duplicate_of=NULL WHERE url_key=?').run(first.url_key);
-    this.db.prepare('INSERT INTO docs_fts (url_key,title,description,text) VALUES (?,?,?,?)').run(first.url_key, first.title, first.description, first.text);
+    this.index(first.url_key, first.title, first.description, first.text);
     for (const other of rest) this.db.prepare('UPDATE documents SET duplicate_of=? WHERE url_key=?').run(first.url_key, other.url_key);
   }
 
@@ -124,7 +137,7 @@ export class DocumentStore {
 
   count(): { documents: number; indexed: number; duplicates: number } {
     const n = (sql: string) => Number((this.db.prepare(sql).get() as { n: number }).n);
-    return { documents: n('SELECT COUNT(*) AS n FROM documents'), indexed: n('SELECT COUNT(*) AS n FROM docs_fts'), duplicates: n('SELECT COUNT(*) AS n FROM documents WHERE duplicate_of IS NOT NULL') };
+    return { documents: n('SELECT COUNT(*) AS n FROM documents'), indexed: n('SELECT COUNT(*) AS n FROM docs_index'), duplicates: n('SELECT COUNT(*) AS n FROM documents WHERE duplicate_of IS NOT NULL') };
   }
   linkCount(): number { return Number((this.db.prepare('SELECT COUNT(*) AS n FROM links').get() as { n: number }).n); }
 }

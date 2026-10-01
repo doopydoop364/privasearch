@@ -85,7 +85,7 @@ Recrawls send the stored validators (ETag, Last-Modified), so an unchanged page 
 
 ## Index and deduplication
 
-One SQLite file (`PRIVASEARCH_DB`): `documents` (normalised URL, final and canonical URL, title, description, extracted text, language, content hash, last fetch, last change, change count, HTTP status), an FTS5 index over title, description and text, the `links` graph, the frontier, the demand ledger. A database written by an older version is migrated in place when it is opened (`user_version` 2).
+One SQLite file (`PRIVASEARCH_DB`): `documents` (normalised URL, final and canonical URL, title, description, extracted text, language, content hash, last fetch, last change, change count, HTTP status), an FTS5 index over title, description and text, the `links` graph, the frontier, the demand ledger. A database written by an older version is migrated in place when it is opened (`user_version` 3).
 
 - Pages that are not text are not indexed: the node reports `UNSUPPORTED_CONTENT_TYPE` and the page is not stored. Only 2xx `FETCHED` pages are indexed; `noindex` pages are removed, and so are pages that now return `404` or `410`.
 - Identical content under another URL is stored as a duplicate and not indexed. A page whose canonical URL names another indexed page is a duplicate of it, whichever arrives first. If the original is removed, a duplicate is promoted.
