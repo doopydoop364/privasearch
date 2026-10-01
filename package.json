@@ -12,7 +12,7 @@
     "build": "tsc -b",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
-    "test": "npm run build && node --test \"dist/tests/*.test.js\"",
+    "test": "npm run build && node --test --test-concurrency=1 \"dist/tests/*.test.js\"",
     "serve": "node dist/src/main.js",
     "crawl": "node dist/src/crawl.js"
   },
