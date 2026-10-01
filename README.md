@@ -55,7 +55,7 @@ PrivaSearch is licensed under the [Apache License, Version 2.0](LICENSE) (`Apach
 
 ## Development
 
-Node **24.4+**. The PrivaNet packages are installed from the PrivaNet-Core `v0.3.0-alpha.5` release assets (a temporary bridge until they are published to the npm registry; see PrivaNet-Core `docs/PACKAGES.md`).
+Node **24.4+**. `@privanet/protocol` and `@privanet/sdk` are plain, exact-version dependencies from the public npm registry (`@privanet/shared` comes in through the SDK; PrivaSearch does not import it). The real-path tests and the crawl scripts also need a PrivaNet-Core Coordinator and PrivaNode, which are release archives and not npm packages: set `PRIVANET_CORE_DIR` to a built PrivaNet-Core checkout (see PrivaNet-Core `docs/PACKAGES.md`).
 
 ```bash
 npm ci

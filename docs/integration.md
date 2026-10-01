@@ -26,10 +26,10 @@ The SDK validates a job result against the registered output schema before retur
 
 ## Version mismatch and upgrades
 
-Packages are pinned to an exact version. A Coordinator that speaks a different protocol version answers 426, which surfaces as `INCOMPATIBLE`. Upgrade `@privanet/*` together (see PrivaNet-Core `docs/PACKAGES.md`); the three must share a version.
+Packages are pinned to an exact version (`npm install --save-exact @privanet/sdk@next`, then the same version for `@privanet/protocol`). A Coordinator that speaks a different protocol version answers 426, which surfaces as `INCOMPATIBLE`. Upgrade `@privanet/*` together (see PrivaNet-Core `docs/PACKAGES.md`); the three must share a version.
 
 ## Open items on the PrivaNet side (owned by PrivaNet-Core)
 
-1. Publish the packages to the npm registry (needs the `privanet` org and an `NPM_TOKEN`); until then they are installed from release assets.
+1. ~~Publish the packages to the npm registry~~ Done: `@privanet/protocol`, `shared` and `sdk` are on public npm (`0.3.0-alpha.5`, trusted publishing). PrivaSearch depends on `@privanet/protocol` and `@privanet/sdk` at that exact version; `tests/dependencies.test.ts` guards against a release-asset URL or a sibling `file:` link coming back.
 2. SDK polling cost: `waitForResult` polls per job; see [measurements.md](measurements.md) for the evidence and the batch or long-poll proposal.
 3. Job cancellation, short retention, and per-host concurrency hints before untrusted nodes.
