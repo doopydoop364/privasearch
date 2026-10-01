@@ -150,3 +150,31 @@ test('ingest cost does not grow with the size of the index (the full-text row us
   assert.ok(late < early * 4 + 0.5, `per-page ingest went from ${early.toFixed(3)} ms to ${late.toFixed(3)} ms as the index grew from 250 to 7,950 pages`);
   db.close();
 });
+
+test('candidates() returns the same pages in the same order as joining every match first (ranking happens before the join, not instead of it)', () => {
+  const db = openDatabase(':memory:'); const documents = new DocumentStore(db);
+  const words = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta', 'eta', 'theta']; let seed = 11; const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32;
+  const pick = (n: number) => Array.from({ length: n }, () => words[Math.floor(rnd() * words.length)]).join(' ');
+  for (let i = 0; i < 300; i++) documents.upsert(doc(`https://h${i % 7}.example/p/${i}`, pick(3), pick(40), i % 20 === 0 ? 1 : i + 2)); // every 20th page has identical content: a duplicate, not indexed
+  const reference = (match: string, limit: number) => (db.prepare(`SELECT d.url_key AS urlKey FROM docs_fts JOIN documents d ON d.url_key = docs_fts.url_key WHERE docs_fts MATCH ? AND d.duplicate_of IS NULL
+    ORDER BY bm25(docs_fts, 0.0, 5.0, 2.0, 1.0), d.url_key LIMIT ?`).all(match, limit) as Array<{ urlKey: string }>).map(r => r.urlKey);
+  for (const [query, mode] of [['alpha', 'AND'], ['alpha beta', 'AND'], ['alpha beta gamma', 'OR'], ['zeta theta', 'AND'], ['nomatchword', 'AND']] as const) {
+    for (const limit of [1, 7, 50, 500]) {
+      const match = query.split(' ').map(w => `"${w}"`).join(mode === 'AND' ? ' ' : ' OR ');
+      assert.deepEqual(documents.candidates(query, mode, limit).map(c => c.urlKey), reference(match, limit), `${query} (${mode}), limit ${limit}`);
+    }
+  }
+  const counts = documents.count(); assert.deepEqual([counts.documents, counts.duplicates, counts.indexed, documents.indexedCount()], [300, 14, 286, 286]);
+  db.close();
+});
+
+test('the frontier and the ledger answer the planner\'s per-search questions from indexes, not by scanning', () => {
+  const db = openDatabase(':memory:'); const frontier = new Frontier(db);
+  for (let i = 0; i < 20; i++) frontier.add(`https://d${i}.example/`, { queue: i % 2 ? 'DEMAND' : 'PUBLIC', priority: 100 }, 1);
+  assert.equal(frontier.pendingDemand(), 10);
+  const plan = (sql: string) => (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{ detail: string }>).map(r => r.detail).join('; ');
+  assert.match(plan(`SELECT COUNT(*) FROM queries WHERE last_crawl_at > 5`), /USING (COVERING )?INDEX queries_last_crawl/);
+  assert.match(plan(`SELECT COUNT(*) FROM documents WHERE duplicate_of IS NOT NULL`), /USING COVERING INDEX documents_duplicate/);
+  assert.match(plan(`SELECT COUNT(*) FROM urls INDEXED BY urls_pending_demand WHERE state='PENDING' AND queue='DEMAND'`), /urls_pending_demand/);
+  db.close();
+});
