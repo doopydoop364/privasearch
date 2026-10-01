@@ -132,3 +132,14 @@ test('configuration: all-or-none PrivaNet settings, strict credentials, a token 
   fails({ PRIVASEARCH_API_TOKEN: 'tooshort' }, ['PRIVASEARCH_API_TOKEN']); fails({ PRIVASEARCH_PORT: '99999' }, ['PRIVASEARCH_PORT']); fails({ PRIVASEARCH_CONCURRENCY: '0' }, ['PRIVASEARCH_CONCURRENCY']);
   fails({ PRIVASEARCH_RECRAWL_MIN_MS: '999999999', PRIVASEARCH_RECRAWL_MAX_MS: '100000' }, ['PRIVASEARCH_RECRAWL_MIN_MS', 'PRIVASEARCH_RECRAWL_MAX_MS']);
 });
+
+test('at start the service forgets ledger entries older than 90 days, keeps recent ones, and says how many it dropped (a count, never a query)', async t => {
+  const d = await dir(t); const path = join(d, 'db.sqlite');
+  const now = Date.now(); const db = openDatabase(path);
+  const add = db.prepare('INSERT INTO queries (qkey, first_seen, last_seen, times_seen) VALUES (?,?,?,1)');
+  add.run('old1', 1, now - 100 * 86400000); add.run('old2', 1, now - 91 * 86400000); add.run('recent', 1, now - 3 * 86400000); db.close();
+  const events: Array<Record<string, unknown>> = [];
+  const s = await startService(configFor(path), { transport: new FakeTransport(web()), log: event => { events.push(event); } }); t.after(() => s.stop());
+  assert.equal(s.planner?.stats().queries, 1);
+  assert.deepEqual(events.find(e => e.event === 'service.ledger_pruned'), { event: 'service.ledger_pruned', removed: 2 });
+});

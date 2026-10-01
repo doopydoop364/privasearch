@@ -127,3 +127,18 @@ test('no candidates means no change and a short cooldown, never an error', () =>
   const { crawl } = r.search('nothing to start from'); assert.deepEqual([crawl.triggered, crawl.state, crawl.candidates], [false, 'no_candidates', 0]);
   assert.equal(r.search('nothing to start from').crawl.state, 'cooldown'); assert.equal(r.frontier.stats().PENDING, 0);
 });
+
+test('the query ledger is bounded: old queries are forgotten, a hard cap keeps the most recent, and a forgotten query is simply treated as new', () => {
+  const r = rig({ minStrong: 3 });
+  for (let i = 0; i < 20; i++) { r.search(`topic${i} thing`); r.advance(HOUR); }
+  const count = () => r.planner.stats().queries;
+  assert.equal(count(), 20);
+  assert.equal(r.planner.prune({ maxAgeMs: 100 * HOUR }), 0, 'nothing is older than the window');
+  assert.equal(r.planner.prune({ maxAgeMs: 10 * HOUR + 1 }), 10, 'queries last seen more than 10 hours ago are forgotten (the oldest 10 of the 20; the clock moved an hour after each)');
+  assert.equal(count(), 10);
+  assert.equal(r.planner.prune({ maxAgeMs: 1000 * HOUR, maxRows: 5 }), 5, 'a hard cap removes the least recently seen beyond it');
+  const kept = (r.db.prepare('SELECT last_seen FROM queries ORDER BY last_seen').all() as Array<{ last_seen: number }>).map(row => row.last_seen);
+  assert.equal(kept.length, 5); assert.ok(Math.min(...kept) > 10_000_000 + 14 * HOUR, 'the most recently seen were kept');
+  const again = r.search('topic0 thing'); assert.equal(again.crawl.state === 'cooldown', false, 'a forgotten query is treated as new, not as one in cooldown');
+  assert.equal(r.planner.prune(), 0);
+});

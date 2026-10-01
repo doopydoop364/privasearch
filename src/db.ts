@@ -69,6 +69,7 @@ export function initSchema(db: DatabaseSync): void {
     -- Counting duplicates, and the demand planner's "how many queries scheduled crawling this hour", must not read every stored page or ledger row.
     CREATE INDEX IF NOT EXISTS documents_duplicate ON documents(duplicate_of) WHERE duplicate_of IS NOT NULL;
     CREATE INDEX IF NOT EXISTS queries_last_crawl ON queries(last_crawl_at);
+    CREATE INDEX IF NOT EXISTS queries_last_seen ON queries(last_seen);
     CREATE INDEX IF NOT EXISTS urls_pending_demand ON urls(priority, next_at) WHERE state='PENDING' AND queue='DEMAND';`);
   const version = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
   if (version < SCHEMA_VERSION) {
