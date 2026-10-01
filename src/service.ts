@@ -64,6 +64,9 @@ export async function startService(config: ServiceConfig, deps: ServiceDeps = {}
   const planner = transport && config.demand.enabled
     ? new DemandPlanner(db, frontier, documents, { clock, templates: config.templates, minStrong: config.demand.minStrong, cooldownMs: config.demand.cooldownMs, maxCandidates: config.demand.maxCandidates,
       maxPendingDemand: config.demand.maxPendingDemand, maxQueriesPerHour: config.demand.maxQueriesPerHour }) : undefined;
+  // The query ledger holds one row per distinct search; forget old ones at start and then once a day, so it cannot grow without bound.
+  const prune = () => { try { const removed = planner?.prune() ?? 0; if (removed > 0) log({ event: 'service.ledger_pruned', removed }); } catch { log({ event: 'service.ledger_prune_failed' }); } };
+  prune(); const pruning = setInterval(prune, 24 * 3600000); pruning.unref();
   const hardStop = new AbortController(); const softStop = new AbortController();
   const crawler = transport ? new Crawler({ frontier, documents, transport, clock, batch: config.concurrency, hardStop: hardStop.signal }) : undefined;
 
@@ -92,7 +95,7 @@ export async function startService(config: ServiceConfig, deps: ServiceDeps = {}
   let stopping: Promise<void> | undefined;
   const stop = (): Promise<void> => stopping ??= (async () => {
     log({ event: 'service.stopping' });
-    clearInterval(progress); softStop.abort();
+    clearInterval(progress); clearInterval(pruning); softStop.abort();
     await new Promise<void>(resolve => { server.close(() => resolve()); server.closeIdleConnections(); setTimeout(() => server.closeAllConnections(), 2000).unref(); });
     // Let fetches that are already submitted finish; past the deadline, give up on them (their URLs go back to the frontier and are resubmitted under the same key).
     const deadline = setTimeout(() => { hardStop.abort(); }, config.shutdownMs);
