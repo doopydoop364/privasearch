@@ -5,7 +5,8 @@ import { FetchResultSchema } from './privanet/contract.js';
 import type { FetchResult } from './privanet/contract.js';
 import { TransportError } from './privanet/transport.js';
 import type { FetchTransport } from './privanet/transport.js';
-import { idempotencyKeyFor, parseCrawlUrl } from './url.js';
+import { discoveryPriority } from './policy.js';
+import { idempotencyKeyFor, parseCrawlUrl, urlKey } from './url.js';
 
 export interface DriverOptions {
   frontier: Frontier; documents: DocumentStore; transport: FetchTransport; clock?: () => number;
@@ -17,6 +18,8 @@ export interface DriverOptions {
 export interface PassSummary {
   submitted: number; outcomes: Partial<Record<FetchResult['outcome'], number>>;
   indexed: number; duplicates: number; discovered: number; invalidResults: number; transportErrors: number;
+  /** Discovered links refused by the crawl-trap guard or the per-host budget, and pages whose content changed since the last fetch. */
+  trapped: number; changed: number;
 }
 
 /**
@@ -43,7 +46,7 @@ export class Crawler {
   }
 
   async runOnce(): Promise<PassSummary> {
-    const summary: PassSummary = { submitted: 0, outcomes: {}, indexed: 0, duplicates: 0, discovered: 0, invalidResults: 0, transportErrors: 0 };
+    const summary: PassSummary = { submitted: 0, outcomes: {}, indexed: 0, duplicates: 0, discovered: 0, invalidResults: 0, transportErrors: 0, trapped: 0, changed: 0 };
     this.o.frontier.requeueStale(this.clock());
     const leased = this.o.frontier.lease(this.clock(), this.batch);
     await Promise.all(leased.map(item => this.crawl(item, summary)));
@@ -58,7 +61,7 @@ export class Crawler {
    * politeness delays, so more concurrency never means more pressure on one site.
    */
   async run(options: { concurrency?: number; signal?: AbortSignal; until?: () => boolean; idleMs?: number } = {}): Promise<PassSummary> {
-    const summary: PassSummary = { submitted: 0, outcomes: {}, indexed: 0, duplicates: 0, discovered: 0, invalidResults: 0, transportErrors: 0 };
+    const summary: PassSummary = { submitted: 0, outcomes: {}, indexed: 0, duplicates: 0, discovered: 0, invalidResults: 0, transportErrors: 0, trapped: 0, changed: 0 };
     const concurrency = Math.max(1, options.concurrency ?? this.batch); const idleMs = Math.max(1, options.idleMs ?? 25);
     const active = new Set<Promise<void>>();
     const nap = (ms: number) => new Promise<void>(resolve => { const timer = setTimeout(resolve, ms); options.signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true }); });
@@ -122,21 +125,31 @@ export class Crawler {
 
   private ingest(item: Leased, result: FetchResult, summary: PassSummary): void {
     const page = result.page; if (!page) return;
-    if (result.indexing?.noindex) { this.o.documents.remove(item.urlKey); } // the site asked not to be indexed: drop anything held
+    let stored: { duplicateOf?: string; changed: boolean } | undefined;
+    if (result.indexing?.noindex) { this.o.documents.remove(item.urlKey); } // the site asked not to be indexed: drop anything held, and keep its links out of the graph
     else {
-      const stored = this.o.documents.upsert({
+      stored = this.o.documents.upsert({
         urlKey: item.urlKey, url: item.url, finalUrl: result.finalUrl ?? item.url, title: page.title ?? '', description: page.description ?? '',
         canonicalUrl: page.canonicalUrl ?? null, language: page.language ?? null, text: page.text ?? '', contentSha256: result.contentSha256 ?? '', fetchedAt: result.fetchedAtMs, httpStatus: result.httpStatus ?? 200 });
       if (stored.duplicateOf) summary.duplicates++; else summary.indexed++;
+      if (stored.changed && !stored.duplicateOf) summary.changed++;
     }
-    if (result.indexing?.nofollow) return;
-    // Discovered links become public-queue work: user demand only ever comes from an explicit request.
+    if (result.indexing?.nofollow) { if (stored) this.o.documents.setLinks(item.urlKey, item.host, []); return; }
+    // Discovered links become public-queue work, shallow pages first: user demand only ever comes from an explicit request.
+    const graph: Array<{ key: string; url: string; host: string }> = [];
     for (const link of page.links) {
       if (link.nofollow) continue;
       const parsed = parseCrawlUrl(link.url, item.url); if (!parsed.ok) continue;
-      // The frontier enforces the maximum crawl depth.
-      const added = this.o.frontier.add(parsed.url, { queue: 'PUBLIC', depth: item.depth + 1 }, this.clock());
-      if (added === 'ADDED') summary.discovered++;
+      graph.push({ key: urlKey(parsed.url), url: parsed.url, host: parsed.host });
+      // The frontier enforces the maximum crawl depth, the crawl-trap guard and the per-host budget.
+      const added = this.o.frontier.add(parsed.url, { queue: 'PUBLIC', depth: item.depth + 1, priority: discoveryPriority(item.depth + 1), source: 'discovered' }, this.clock());
+      if (added === 'ADDED') summary.discovered++; else if (added === 'HOST_BUDGET' || added.startsWith('TRAP:')) summary.trapped++;
+    }
+    if (stored && !stored.duplicateOf) this.o.documents.setLinks(item.urlKey, item.host, graph);
+    // A page that names another page of the same site as its canonical version makes that page worth fetching (never another site: a page cannot send the crawler elsewhere).
+    if (stored && !stored.duplicateOf && page.canonicalUrl) {
+      const canonical = parseCrawlUrl(page.canonicalUrl, result.finalUrl ?? item.url);
+      if (canonical.ok && canonical.host === item.host) this.o.frontier.add(canonical.url, { queue: 'PUBLIC', depth: item.depth, priority: discoveryPriority(item.depth), source: 'discovered' }, this.clock());
     }
   }
 }

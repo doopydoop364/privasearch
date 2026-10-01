@@ -41,9 +41,11 @@ test('re-upserting replaces the indexed row; duplicates are stored but not index
   s.upsert(doc('https://a.example/1', 'First', 'alpha content', 'c'.repeat(64)));
   s.upsert(doc('https://a.example/1', 'First', 'beta content', 'd'.repeat(64)));
   assert.equal(s.search('alpha').length, 0); assert.equal(s.search('beta').length, 1); assert.deepEqual(s.count(), { documents: 1, indexed: 1, duplicates: 0 });
-  assert.deepEqual(s.upsert(doc('https://a.example/2', 'Second', 'beta content', 'd'.repeat(64))), { duplicateOf: urlKey('https://a.example/1') });
+  assert.equal(s.upsert(doc('https://a.example/2', 'Second', 'beta content', 'd'.repeat(64))).duplicateOf, urlKey('https://a.example/1'));
   assert.deepEqual(s.count(), { documents: 2, indexed: 1, duplicates: 1 }); assert.equal(s.search('beta').length, 1);
-  s.remove(urlKey('https://a.example/1')); assert.equal(s.search('beta').length, 0); assert.equal(s.count().documents, 1);
+  // Removing the original promotes its duplicate: the content is still on the web at the other URL, so it must not vanish from the index.
+  s.remove(urlKey('https://a.example/1')); assert.deepEqual(s.search('beta').map(h => h.url), ['https://a.example/2']); assert.deepEqual(s.count(), { documents: 1, indexed: 1, duplicates: 0 });
+  s.remove(urlKey('https://a.example/2')); assert.equal(s.search('beta').length, 0); assert.equal(s.count().documents, 0);
 });
 
 test('search API: GET only, bounded input, JSON with safe headers, no cookies or tracking', async t => {
