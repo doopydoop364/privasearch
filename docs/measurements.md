@@ -166,6 +166,26 @@ Reading:
 
 Reproduce (Linux, root, a built PrivaNet-Core checkout at v0.3.0-alpha.5 or newer, `npm run build` here): `sudo -E PRIVANET_CORE_DIR=../PrivaNet-Core node tests/lan-crawl.mjs`.
 
+## Experiment 10: the complete loop, PrivaProxy to PrivaSearch to a real node (0.4.0)
+
+What a person experiences, with real processes on one machine: a PrivaProxy server calling the PrivaSearch service (bearer token, over loopback), which submits through a real Coordinator to a real enrolled PrivaNode. The site is a local test site with four pages about one topic (the node owner's `hostMap` lets the node reach it; the SSRF guard is not relaxed for anything else). The index starts empty; one URL template (`http://crawl.example/wiki/{title}`) is configured as the bootstrap.
+
+| Step | Measured |
+| --- | --- |
+| First search through PrivaProxy, empty index | **24 ms**: no results, `index.state: "empty"`, `crawl: { triggered: true, state: "scheduled" }` |
+| The same search, until `index.state` was `ready` | **375 to 393 ms** after the first search (two runs): 4 pages fetched by the node (the demand page and the three it linked to), 4 hits, all matching both words |
+| Jobs submitted to the Coordinator | 4, one per page; no page was fetched twice |
+| Token in any PrivaProxy response or log, search text in PrivaProxy's log | none |
+
+Through PrivaSearch's own test (`tests/service-e2e.test.ts`, same stack, a service with seeds): first answer 29 ms; first indexed result 169 ms after the search; strong results at 403 ms; a changed page re-indexed 2.8 s after the change (recrawl interval 2.5 s); after a restart nothing that was not due was fetched again.
+
+Reading and limits:
+- This is a local, single-run, synthetic measurement with no network latency and no politeness delay worth the name (50 ms per host). On the public web the pace is set by robots.txt, per-host delays (2 s by default), the node's resource policy and real round trips, so expect minutes for a first useful answer on a new topic, not milliseconds.
+- It shows the loop is closed and cheap in the middle: a search costs the Coordinator a handful of jobs, and the answer never waits for them.
+- It says nothing about ranking quality or coverage of the real web.
+
+Reproduce: `PRIVANET_CORE_DIR=../PrivaNet-Core npm test` (the `service-e2e` test prints an `e2e.measured` line).
+
 ## Where this leaves the pipeline
 
 Each experiment removed one bottleneck and exposed the next: node poll loop (59 to 1,018 pages per minute on default settings), pipelining (batch to continuous), lease pickup latency, application polling (Coordinator CPU 5 times lower), job slots (259 to 2,103 pages per minute per process at 200 ms latency). What is measured is a synthetic local site on one machine. The next honest step is real sites (robots variety, slow and failing hosts, redirects), where the per-host politeness rules and the network, not the platform, should be the limit.
