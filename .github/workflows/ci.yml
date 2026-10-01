@@ -31,6 +31,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PRIVANET_CORE_DIR: ${{ github.workspace }}/.privanet-core
+      # A skipped test counts as a pass, so without this a broken setup step would leave the job green with no end-to-end coverage.
+      PRIVASEARCH_REQUIRE_REAL_PATH: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startService } from '../src/service.js';
 import type { ServiceConfig } from '../src/service-config.js';
-import { canBindPort80, startCore, startSite } from './core-rig.js';
+import { realPathSkip, startCore, startSite } from './core-rig.js';
 
 /**
  * The real Coordinator is killed without warning (SIGKILL) in the middle of a crawl and started again. PrivaSearch must lose nothing: every page is
@@ -13,7 +13,7 @@ import { canBindPort80, startCore, startSite } from './core-rig.js';
  * checkout (PRIVANET_CORE_DIR) and permission to listen on 127.0.0.1:80.
  */
 const core = process.env.PRIVANET_CORE_DIR;
-const skip = !core ? 'set PRIVANET_CORE_DIR to a built PrivaNet-Core checkout' : (await canBindPort80()) ? false : 'cannot listen on 127.0.0.1:80';
+const skip = await realPathSkip();
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 async function until<T>(what: string, check: () => T | undefined | false | Promise<T | undefined | false>, ms = 60000): Promise<T> {
   const end = Date.now() + ms;

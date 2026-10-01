@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { startService } from '../src/service.js';
 import type { Service } from '../src/service.js';
 import type { ServiceConfig } from '../src/service-config.js';
-import { canBindPort80, startCore, startSite } from './core-rig.js';
+import { realPathSkip, startCore, startSite } from './core-rig.js';
 
 /**
  * The complete loop against the real thing: PrivaSearch service -> @privanet/sdk -> a real Coordinator -> a real, enrolled PrivaNode -> web.fetch.v1 ->
@@ -14,7 +14,7 @@ import { canBindPort80, startCore, startSite } from './core-rig.js';
  * weakened for anything else). It needs a built PrivaNet-Core checkout (PRIVANET_CORE_DIR) and permission to listen on 127.0.0.1:80.
  */
 const core = process.env.PRIVANET_CORE_DIR;
-const skip = !core ? 'set PRIVANET_CORE_DIR to a built PrivaNet-Core checkout' : (await canBindPort80()) ? false : 'cannot listen on 127.0.0.1:80';
+const skip = await realPathSkip();
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 async function until<T>(what: string, check: () => T | undefined | false | Promise<T | undefined | false>, ms = 30000): Promise<T> {
