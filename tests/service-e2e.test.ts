@@ -38,7 +38,7 @@ test('PrivaProxy-shaped search -> demand crawl -> real node -> index -> better r
     return undefined;
   });
   const rig = await startCore(core as string, { hostMap: { 'crawl.example': '127.0.0.1', 'trails.example': '127.0.0.1' } });
-  const dir = await mkdtemp(join(tmpdir(), 'privasearch-e2e-')); t.after(async () => { await rig.stop(); await site.close(); await rm(dir, { recursive: true, force: true }); });
+  const dir = await mkdtemp(join(tmpdir(), 'privasearch-e2e-')); t.after(async () => { await rig.stop(); await site.close(); await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }).catch(() => undefined); });
   const config = (over: Partial<ServiceConfig> = {}): ServiceConfig => ({
     dbPath: join(dir, 'privasearch.sqlite'), host: '127.0.0.1', port: 0, concurrency: 4,
     privanet: { coordinatorUrl: rig.url, tokens: rig.tokens, allowInsecureLoopback: true, waitTimeoutMs: 30000, pollMs: 25 },

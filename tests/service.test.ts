@@ -32,7 +32,9 @@ const WEB = new Map<string, { title: string; text: string; links?: string[] }>([
 ]);
 const web = (clock: () => number = Date.now): Responder => input => { const page = WEB.get(input.url);
   return page ? pageResult(input.url, clock(), { title: page.title, text: page.text, links: (page.links ?? []).map(url => ({ url })) }) : outcomeResult('HTTP_ERROR', input.url, clock(), { httpStatus: 404 }); };
-async function dir(t: { after(fn: () => Promise<void>): void }) { const d = await mkdtemp(join(tmpdir(), 'privasearch-svc-')); t.after(() => rm(d, { recursive: true, force: true })); return d; }
+// On Windows an open SQLite file cannot be deleted, and this hook runs before the service's own stop hook; the OS cleans the temp dir, so an unremovable one must not abort the remaining hooks.
+const cleanup = (d: string) => rm(d, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch(() => undefined);
+async function dir(t: { after(fn: () => Promise<void>): void }) { const d = await mkdtemp(join(tmpdir(), 'privasearch-svc-')); t.after(() => cleanup(d)); return d; }
 const api = async (s: Service, path: string, headers: Record<string, string> = {}) => { const res = await fetch(`http://127.0.0.1:${s.port}${path}`, { headers }); return { status: res.status, body: await res.json() as Record<string, any> }; }; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 test('search-only mode: no PrivaNet settings means it serves the existing index and crawls nothing, and says so', async t => {
