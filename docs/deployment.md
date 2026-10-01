@@ -58,7 +58,7 @@ All settings are environment variables; an invalid one is reported by name (neve
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `PRIVANET_COORDINATOR_URL`, `PRIVANET_DEMAND_TOKEN`, `PRIVANET_PUBLIC_TOKEN` | none | All three, or none for a **search-only** service that serves its index and crawls nothing. The two tokens must be different. |
+| `PRIVANET_COORDINATOR_URL`, `PRIVANET_DEMAND_TOKEN`, `PRIVANET_PUBLIC_TOKEN` | none | All three, or none for a **search-only** service that serves its index and crawls nothing. The two tokens must be different. The address must be `https://host` (no path or credentials); plain `http` only for a literal loopback address with `PRIVASEARCH_ALLOW_INSECURE_LOOPBACK=true`. Anything else is reported as `service.config_invalid` naming `PRIVANET_COORDINATOR_URL`. |
 | `PRIVASEARCH_DB` | `./var/privasearch.sqlite` | The database file (use `/var/lib/privasearch/privasearch.sqlite` under systemd). |
 | `PRIVASEARCH_HOST`, `PRIVASEARCH_PORT` | `127.0.0.1`, `4020` | Where the API listens. |
 | `PRIVASEARCH_API_TOKEN` | none | Bearer token for `/search` and `/status` (at least 32 characters). **Required** when the host is not a loopback address. |

@@ -1,3 +1,4 @@
+import { PrivaNetClient } from '@privanet/sdk';
 import type { FrontierOptions } from './frontier.js';
 
 /**
@@ -45,7 +46,12 @@ export function parseServiceConfig(env: Record<string, string | undefined>, seed
     if (!TOKEN.test(demand as string)) throw new ConfigError(['PRIVANET_DEMAND_TOKEN'], 'PRIVANET_DEMAND_TOKEN must be a 64-hex application credential');
     if (!TOKEN.test(pub as string)) throw new ConfigError(['PRIVANET_PUBLIC_TOKEN'], 'PRIVANET_PUBLIC_TOKEN must be a 64-hex application credential');
     if (demand === pub) throw new ConfigError(['PRIVANET_DEMAND_TOKEN', 'PRIVANET_PUBLIC_TOKEN'], 'the demand and public queues must use different PrivaNet application credentials');
-    privanet = { coordinatorUrl: urlSetting as string, tokens: { DEMAND: demand as string, PUBLIC: pub as string }, allowInsecureLoopback: bool('PRIVASEARCH_ALLOW_INSECURE_LOOPBACK', env.PRIVASEARCH_ALLOW_INSECURE_LOOPBACK, false),
+    const allowInsecureLoopback = bool('PRIVASEARCH_ALLOW_INSECURE_LOOPBACK', env.PRIVASEARCH_ALLOW_INSECURE_LOOPBACK, false);
+    // Refuse an unusable Coordinator address HERE, as a configuration error (exit status 78, no restart loop), using the SDK's own rules. Left to the transport it
+    // surfaced as an unexplained "service.start_failed" with status 1, which a service manager restarts every few seconds. The address itself is never echoed (it can carry credentials).
+    try { new PrivaNetClient({ url: urlSetting as string, token: demand as string, ...(allowInsecureLoopback ? { allowInsecureLoopback: true } : {}) }); }
+    catch { throw new ConfigError(['PRIVANET_COORDINATOR_URL'], 'PRIVANET_COORDINATOR_URL is not an acceptable Coordinator address: use https://host (plain http only for a literal loopback address with PRIVASEARCH_ALLOW_INSECURE_LOOPBACK=true)'); }
+    privanet = { coordinatorUrl: urlSetting as string, tokens: { DEMAND: demand as string, PUBLIC: pub as string }, allowInsecureLoopback,
       waitTimeoutMs: integer('PRIVASEARCH_WAIT_TIMEOUT_MS', env.PRIVASEARCH_WAIT_TIMEOUT_MS, 60000, 1000, 600000), pollMs: integer('PRIVASEARCH_POLL_MS', env.PRIVASEARCH_POLL_MS, 100, 10, 5000) };
   }
   const seeds = (seedFileText ?? '').split(/\r?\n/).map(line => line.trim()).filter(line => line !== '' && !line.startsWith('#'));

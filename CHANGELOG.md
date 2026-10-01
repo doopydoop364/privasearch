@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **A wrong Coordinator address caused a silent restart loop.** `PRIVANET_COORDINATOR_URL=http://coordinator.lan:4010` (plain http, a path, credentials, a missing scheme) was only rejected later by the transport, as `service.start_failed` with reason `ERROR` and exit status 1, which the systemd unit restarts every 10 seconds with nothing to say what is wrong. It is now rejected while the configuration is read, as `service.config_invalid` naming `PRIVANET_COORDINATOR_URL` (exit status 78, no restart), using the SDK's own rules. The address is never echoed.
+
 ### Changed
 - **Per-search cost no longer scales with the whole index and ledger** (30,000 pages of 10 KiB, 200,000 ledger rows, file-backed): `/health` and every search's page counts 24 ms to 0.9 ms (a duplicate count read every page's text; now a partial index), the demand planner's "queries that scheduled crawling this hour" 15 ms to 0.03 ms (index) and its demand-backlog check 12.7 ms to 0.05 ms (it computed all operator counters), and the candidate query ranks the best 300 full-text rows by bm25 before joining them to their pages (203 ms to 110 ms for a word in every page; a search 350 ms to about 170-200 ms). Results and order are unchanged (tested against the old query).
 
