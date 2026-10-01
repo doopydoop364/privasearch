@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **The demand-crawl query ledger grew without bound.** Every distinct search ever made (as a salted hash) stayed in the `queries` table for good. The service now forgets entries not seen for 90 days (and keeps at most 500,000, dropping the least recently seen) at start and once a day, and logs only how many it dropped. A forgotten query is treated as new the next time it is searched.
+
 ### Changed
 - **Per-search cost no longer scales with the whole index and ledger** (30,000 pages of 10 KiB, 200,000 ledger rows, file-backed): `/health` and every search's page counts 24 ms to 0.9 ms (a duplicate count read every page's text; now a partial index), the demand planner's "queries that scheduled crawling this hour" 15 ms to 0.03 ms (index) and its demand-backlog check 12.7 ms to 0.05 ms (it computed all operator counters), and the candidate query ranks the best 300 full-text rows by bm25 before joining them to their pages (203 ms to 110 ms for a word in every page; a search 350 ms to about 170-200 ms). Results and order are unchanged (tested against the old query).
 

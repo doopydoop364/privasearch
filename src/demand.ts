@@ -90,6 +90,18 @@ export class DemandPlanner {
     return { triggered: true, state: 'scheduled', candidates: pending };
   }
 
+  /**
+   * Bounds the ledger: forgets queries not seen for `maxAgeMs` (default 90 days) and, if more than `maxRows` remain (default 500,000), the least recently seen
+   * beyond that. Without this every distinct search ever made stays in the database for good. Forgetting a query only means it is treated as new next time.
+   */
+  prune(options: { maxAgeMs?: number; maxRows?: number } = {}): number {
+    const now = this.o.clock(); const maxAge = options.maxAgeMs ?? 90 * 86400000; const maxRows = options.maxRows ?? 500000;
+    let removed = Number(this.db.prepare('DELETE FROM queries WHERE last_seen < ?').run(now - maxAge).changes);
+    const count = Number((this.db.prepare('SELECT COUNT(*) AS n FROM queries').get() as { n: number }).n);
+    if (count > maxRows) removed += Number(this.db.prepare('DELETE FROM queries WHERE qkey IN (SELECT qkey FROM queries ORDER BY last_seen LIMIT ?)').run(count - maxRows).changes);
+    return removed;
+  }
+
   stats(): { queries: number; explored: number } {
     const n = (sql: string) => Number((this.db.prepare(sql).get() as { n: number }).n);
     return { queries: n('SELECT COUNT(*) AS n FROM queries'), explored: n('SELECT COUNT(*) AS n FROM queries WHERE crawl_rounds > 0') };
