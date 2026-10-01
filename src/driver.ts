@@ -104,10 +104,20 @@ export class Crawler {
     const problem = parsed.success ? this.crossCheck(item, parsed.data) : 'SCHEMA';
     if (!parsed.success || problem) { summary.invalidResults++; this.o.frontier.fail(item.urlKey, this.clock(), `INVALID_RESULT:${problem ?? 'SCHEMA'}`); return; }
     const result = parsed.data; const now = this.clock();
+    // The URL's new state and the page it produced are stored together. Marking the URL done and then failing to store its page would leave it "fresh"
+    // with nothing indexed, and a later 304 would never repair that. If storing fails, nothing of this result is kept and the URL counts a failed attempt.
+    const counted = { ...summary, discovered: 0, duplicates: 0, indexed: 0, trapped: 0, changed: 0 };
+    try {
+      this.o.frontier.atomically(() => {
+        this.o.frontier.complete(item.urlKey, result, now);
+        if (result.outcome === 'FETCHED' && result.page) this.ingest(item, result, counted);
+        else if (result.outcome === 'HTTP_ERROR' && (result.httpStatus === 404 || result.httpStatus === 410)) this.o.documents.remove(item.urlKey);
+      });
+    } catch {
+      summary.invalidResults++; this.o.frontier.fail(item.urlKey, this.clock(), 'INGEST_FAILED'); return;
+    }
     summary.outcomes[result.outcome] = (summary.outcomes[result.outcome] ?? 0) + 1;
-    this.o.frontier.complete(item.urlKey, result, now);
-    if (result.outcome === 'FETCHED' && result.page) this.ingest(item, result, summary);
-    else if (result.outcome === 'HTTP_ERROR' && (result.httpStatus === 404 || result.httpStatus === 410)) this.o.documents.remove(item.urlKey);
+    summary.discovered += counted.discovered; summary.duplicates += counted.duplicates; summary.indexed += counted.indexed; summary.trapped += counted.trapped; summary.changed += counted.changed;
   }
 
   /** What a well-behaved node cannot get wrong. A mismatch means a buggy or dishonest node, so the result is rejected. */

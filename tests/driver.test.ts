@@ -183,3 +183,17 @@ test('while PrivaNet stays unreachable the pipeline backs off and does not churn
   // Windows of 100 ms then 200 ms: at most three bursts of four submissions in 350 ms, not one burst per loop turn.
   assert.ok(r.transport.calls.length >= 4 && r.transport.calls.length <= 12, `${r.transport.calls.length} submissions while unreachable`);
 });
+
+test('a result and its page are stored together: if the page cannot be stored the URL is not marked done, and it is tried again later', async () => {
+  const url = 'https://a.example/page';
+  const r = rig(input => pageResult(input.url, r.time.now, { title: 'Stored page', text: 'words that must become searchable' }, { contentSha256: 'a'.repeat(64) }), { hostDelayMs: 0, backoffBaseMs: 1000 });
+  r.frontier.add(url, { queue: 'PUBLIC' }, r.time.now);
+  r.db.exec(`CREATE TRIGGER fail_index BEFORE INSERT ON docs_index BEGIN SELECT RAISE(ABORT, 'disk full'); END`);
+  const first = await r.crawler.runOnce(); // must not throw: a storage failure is this URL's problem, not the crawler's
+  const row = r.frontier.getByUrl(url);
+  assert.deepEqual([first.submitted, first.invalidResults, row?.state, row?.attempts, r.documents.count().documents], [1, 1, 'PENDING', 1, 0], 'not DONE, no page, one failed attempt');
+  assert.match(String(row?.last_outcome), /INGEST_FAILED/);
+  r.db.exec('DROP TRIGGER fail_index'); r.advance(60_000);
+  await r.crawler.runOnce();
+  assert.deepEqual([r.frontier.getByUrl(url)?.state, r.documents.search('searchable').map(h => h.url)], ['DONE', [url]], 'the next attempt stores the page');
+});

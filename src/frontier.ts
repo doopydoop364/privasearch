@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import type { FetchResult } from './privanet/contract.js';
 import type { Queue } from './privanet/transport.js';
-import { initSchema } from './db.js';
+import { initSchema, inTransaction } from './db.js';
 import { crawlTrap } from './policy.js';
 import type { TrapReason } from './policy.js';
 import { parseCrawlUrl, urlKey } from './url.js';
@@ -46,10 +46,9 @@ export class Frontier {
       goneRecheckMs: 30 * DAY, failedRecheckMs: 30 * DAY, staleLeaseMs: 300000, maxDepth: 8, maxUrlsPerHost: 2000, recrawlShare: 0.25, ...options };
     initSchema(db);
   }
-  private transaction<T>(work: () => T): T {
-    this.db.exec('BEGIN IMMEDIATE');
-    try { const result = work(); this.db.exec('COMMIT'); return result; } catch (error) { this.db.exec('ROLLBACK'); throw error; }
-  }
+  private transaction<T>(work: () => T): T { return inTransaction(this.db, work); }
+  /** Runs `work` (frontier and document changes on this database) as one unit: all of it or none of it. */
+  atomically<T>(work: () => T): T { return inTransaction(this.db, work); }
   private backoff(attempts: number): number { return Math.min(this.o.maxBackoffMs, this.o.backoffBaseMs * 2 ** Math.max(0, attempts - 1)); }
 
   add(raw: string, options: { queue: Queue; priority?: number; depth?: number; source?: Source }, now: number): AddResult {
