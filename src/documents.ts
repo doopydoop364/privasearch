@@ -124,9 +124,12 @@ export class DocumentStore {
   /** Up to `limit` indexed pages matching the query (all terms, or any term), with the raw `bm25` score for the ranker. */
   candidates(query: string, mode: 'AND' | 'OR', limit: number): Candidate[] {
     const match = toMatchQuery(query, mode); if (!match) return [];
+    // Rank first, join after: the best `limit` full-text rows are picked by bm25 alone, and only those are joined to their pages. Joining first read a page row for every
+    // page matching a common word (tens of thousands) just to throw all but `limit` of them away.
     const rows = this.db.prepare(`SELECT d.url_key AS urlKey, d.url AS url, d.final_url AS finalUrl, d.title AS title, d.description AS description, d.text AS text, COALESCE(d.host,'') AS host,
-        d.canonical_key AS canonicalKey, d.fetched_at AS fetchedAt, COALESCE(d.last_changed_at, d.fetched_at) AS lastChangedAt, d.http_status AS httpStatus, bm25(docs_fts, 0.0, 5.0, 2.0, 1.0) AS ftsScore
-      FROM docs_fts JOIN documents d ON d.url_key = docs_fts.url_key WHERE docs_fts MATCH ? AND d.duplicate_of IS NULL ORDER BY ftsScore, d.url_key LIMIT ?`).all(match, Math.min(Math.max(1, limit), 500)) as unknown as Candidate[];
+        d.canonical_key AS canonicalKey, d.fetched_at AS fetchedAt, COALESCE(d.last_changed_at, d.fetched_at) AS lastChangedAt, d.http_status AS httpStatus, f.ftsScore AS ftsScore
+      FROM (SELECT url_key, bm25(docs_fts, 0.0, 5.0, 2.0, 1.0) AS ftsScore FROM docs_fts WHERE docs_fts MATCH ? ORDER BY ftsScore, url_key LIMIT ?) f
+      JOIN documents d ON d.url_key = f.url_key WHERE d.duplicate_of IS NULL ORDER BY f.ftsScore, d.url_key`).all(match, Math.min(Math.max(1, limit), 500)) as unknown as Candidate[];
     return rows.map(r => ({ ...r, fetchedAt: Number(r.fetchedAt), lastChangedAt: Number(r.lastChangedAt), ftsScore: Number(r.ftsScore), httpStatus: Number(r.httpStatus) }));
   }
 
@@ -139,5 +142,7 @@ export class DocumentStore {
     const n = (sql: string) => Number((this.db.prepare(sql).get() as { n: number }).n);
     return { documents: n('SELECT COUNT(*) AS n FROM documents'), indexed: n('SELECT COUNT(*) AS n FROM docs_index'), duplicates: n('SELECT COUNT(*) AS n FROM documents WHERE duplicate_of IS NOT NULL') };
   }
+  /** Pages in the full-text index (what a search can find); one index scan, cheap enough to ask on every search. */
+  indexedCount(): number { return Number((this.db.prepare('SELECT COUNT(*) AS n FROM docs_index').get() as { n: number }).n); }
   linkCount(): number { return Number((this.db.prepare('SELECT COUNT(*) AS n FROM links').get() as { n: number }).n); }
 }

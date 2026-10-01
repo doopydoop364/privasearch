@@ -67,7 +67,7 @@ export class DemandPlanner {
 
     const rounds = row?.crawl_rounds ?? 0; const cooldown = Math.min(this.o.maxCooldownMs, this.o.cooldownMs * 2 ** Math.min(Math.max(0, rounds - 1), 16));
     if (row?.last_crawl_at != null && now - row.last_crawl_at < cooldown) return { triggered: false, state: 'cooldown', candidates: 0, retryAfterSec: Math.ceil((cooldown - (now - row.last_crawl_at)) / 1000) };
-    if (this.frontier.detail(now).pendingDemand >= this.o.maxPendingDemand) return { triggered: false, state: 'busy', candidates: 0 };
+    if (this.frontier.pendingDemand() >= this.o.maxPendingDemand) return { triggered: false, state: 'busy', candidates: 0 };
     const recent = Number((this.db.prepare('SELECT COUNT(*) AS n FROM queries WHERE last_crawl_at > ?').get(now - HOUR) as { n: number }).n);
     if (recent >= this.o.maxQueriesPerHour) return { triggered: false, state: 'rate_limited', candidates: 0, retryAfterSec: 60 };
 

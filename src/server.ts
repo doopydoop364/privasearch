@@ -61,6 +61,6 @@ export function createSearchServer(arg: DocumentStore | ServerDeps): Server {
     const crawl: CrawlInfo = !deps.planner ? { triggered: false, state: 'disabled', candidates: 0 } : result.offset === 0 ? deps.planner.consider(q, result) : { triggered: false, state: 'none', candidates: 0 };
     const minStrong = deps.planner?.minStrong ?? 3;
     const state = result.total === 0 ? 'empty' : result.strong >= minStrong ? 'ready' : 'partial';
-    send(200, { apiVersion: API_VERSION, query: q, total: result.total, offset: result.offset, limit: result.limit, hits: result.hits, index: { state, documents: deps.documents.count().indexed }, crawl });
+    send(200, { apiVersion: API_VERSION, query: q, total: result.total, offset: result.offset, limit: result.limit, hits: result.hits, index: { state, documents: deps.documents.indexedCount() }, crawl });
   });
 }
