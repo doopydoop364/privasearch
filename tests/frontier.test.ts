@@ -77,7 +77,8 @@ test('errors back off exponentially and attempts are bounded', () => {
     const row = r.frontier.get(l.urlKey); assert.ok(row); waits.push(row.next_at - r.time.now); r.advance(Math.max(waits.at(-1) ?? 0, 1));
   }
   assert.deepEqual(waits.slice(0, 3), [1000, 2000, 4000]); assert.equal(r.frontier.get(key('https://e.example/1'))?.state, 'FAILED'); // the fourth failure is terminal
-  r.advance(30 * 86400000); assert.equal(r.frontier.lease(r.time.now, 1).length, 0); // FAILED is never leased again on its own
+  // The loop waited out the 30-day recheck interval after the terminal failure: a URL that kept failing is retried rarely, not never (it is the only thing due).
+  assert.equal(r.frontier.lease(r.time.now, 1).length, 1);
 });
 
 test('a failing host backs off as a whole: its other URLs wait too, other hosts do not', () => {
