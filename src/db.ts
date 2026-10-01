@@ -10,8 +10,10 @@ import { urlKey } from './url.js';
  *
  * Schema version 2 (0.4.0) adds: documents.{canonical_key, host, first_seen_at, last_changed_at, change_count}, the `links` table,
  * urls.{interval_ms, change_count, unchanged_streak, last_changed_at}, the `queries` table and a small `meta` table (a per-install salt for query hashes).
+ * Schema version 3 adds `docs_index`, which maps a page to its full-text row so the row can be replaced by rowid. `docs_fts.url_key` is UNINDEXED,
+ * so deleting by it scanned the whole index and made every ingest cost proportional to the index size.
  */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 const TABLES = `
 CREATE TABLE IF NOT EXISTS documents (
@@ -32,6 +34,7 @@ CREATE TABLE IF NOT EXISTS urls (
 CREATE INDEX IF NOT EXISTS urls_due ON urls(state, next_at);
 CREATE INDEX IF NOT EXISTS urls_host ON urls(host, state);
 CREATE TABLE IF NOT EXISTS hosts (host TEXT PRIMARY KEY, next_allowed_at INTEGER NOT NULL DEFAULT 0, backoff_until INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0) STRICT;
+CREATE TABLE IF NOT EXISTS docs_index (id INTEGER PRIMARY KEY, url_key TEXT NOT NULL UNIQUE) STRICT;
 `;
 const TABLES_V2 = `
 CREATE TABLE IF NOT EXISTS links (
@@ -70,8 +73,28 @@ export function initSchema(db: DatabaseSync): void {
       let host = ''; try { host = new URL(row.url).hostname; } catch { /* leave empty */ }
       db.prepare('UPDATE documents SET host=?, first_seen_at=COALESCE(first_seen_at, fetched_at), last_changed_at=COALESCE(last_changed_at, fetched_at) WHERE url_key=?').run(host, row.url_key);
     }
+    if (version < 3) {
+      // Map every existing full-text row to its page (keeping its rowid), dropping any stale second row for the same page.
+      db.exec('DELETE FROM docs_fts WHERE rowid NOT IN (SELECT MIN(rowid) FROM docs_fts GROUP BY url_key)');
+      db.exec('INSERT OR IGNORE INTO docs_index (id, url_key) SELECT rowid, url_key FROM docs_fts');
+    }
     db.exec(`PRAGMA user_version=${SCHEMA_VERSION}`);
   }
+}
+
+let savepoints = 0;
+/**
+ * Runs `work` atomically. Outside a transaction it takes the write lock up front (BEGIN IMMEDIATE); inside one (a caller grouping several steps)
+ * it uses a savepoint, so the same code is correct on its own and as part of a larger unit.
+ */
+export function inTransaction<T>(db: DatabaseSync, work: () => T): T {
+  if (db.isTransaction) {
+    const name = `sp${savepoints++}`;
+    db.exec(`SAVEPOINT ${name}`);
+    try { const result = work(); db.exec(`RELEASE ${name}`); return result; } catch (error) { db.exec(`ROLLBACK TO ${name}`); db.exec(`RELEASE ${name}`); throw error; }
+  }
+  db.exec('BEGIN IMMEDIATE');
+  try { const result = work(); db.exec('COMMIT'); return result; } catch (error) { db.exec('ROLLBACK'); throw error; }
 }
 
 /** Opens (creating the directory if needed) and migrates the database file. `:memory:` is allowed for tests. */
