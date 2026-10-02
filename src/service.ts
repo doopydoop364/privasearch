@@ -13,6 +13,7 @@ import type { FetchTransport } from './privanet/transport.js';
 import { Searcher } from './ranking.js';
 import { createSearchServer } from './server.js';
 import type { ServiceConfig } from './service-config.js';
+import { waitForWake } from './wait.js';
 
 /**
  * The long-running PrivaSearch service: one process that serves the search API, runs the background crawler, and (when a search is weak)
@@ -86,7 +87,7 @@ export async function startService(config: ServiceConfig, deps: ServiceDeps = {}
     loop = (async () => {
       while (!softStop.signal.aborted) {
         try { await crawler.run({ concurrency: config.concurrency, signal: softStop.signal }); }
-        catch { log({ event: 'service.crawl_error' }); await new Promise<void>(resolve => { const timer = setTimeout(resolve, 5000); softStop.signal.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true }); }); }
+        catch { log({ event: 'service.crawl_error' }); await waitForWake([], 5000, softStop.signal); }
       }
       crawling = false;
     })();

@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.5.0] - 2026-10-02
 
 Crawl quality: a frontier dominated by one giant site (Wikipedia and its language editions, about 18,000 pending URLs) now shares the crawl with independent sites. Schema version 4; **take a backup before first start** (a v4 database is not readable by 0.4.1). Core is unchanged. Details, formulas and measurements: [docs/crawl-quality.md](docs/crawl-quality.md).
 
@@ -11,7 +11,7 @@ Crawl quality: a frontier dominated by one giant site (Wikipedia and its languag
 - **Link fanout**: other domains first, title-relevant internal links, at most 2 sibling-host links.
 - **Soft-404 and thin-page detection** (down-ranked, not deleted) and domain yield.
 - **`frontier-cli`** (`npm run frontier`): analyze, explain, domain, seeds, prune (dry-run or apply), backup (`VACUUM INTO`). `/status` shows concentration and admission counters.
-- **Optional discovery**: a query provider (off; sends the query to a third party only with `PRIVASEARCH_DISCOVERY_PROVIDER_SEND_QUERIES=true`) and `/sitemap.txt` (off; `PRIVASEARCH_SITEMAP_TXT=true`), both fetched through `web.fetch.v1`.
+- **Optional discovery**: a query provider (off; sends the query to a third party only with `PRIVASEARCH_DISCOVERY_PROVIDER_SEND_QUERIES=true`) and `/sitemap.txt` (off; `PRIVASEARCH_SITEMAP_TXT=true`), provider-named pages and `/sitemap.txt` are fetched through `web.fetch.v1`. The opt-in provider query itself is sent directly to the configured endpoint.
 - Seed classes (`URL class=name`), URL-shaped queries as direct demand.
 - Benchmarks: `tests/bench/scale.ts`; synthetic-web simulator `tests/sim`.
 
@@ -19,6 +19,22 @@ Crawl quality: a frontier dominated by one giant site (Wikipedia and its languag
 - Counters (`/status`, `/health`, scheduling) are O(1), maintained by triggers in the same transaction.
 - Lease cost no longer grows with a giant domain's backlog (measured: lease of 8, p50 6.1 ms at 10,000 and 6.4 ms at 100,000 pending URLs; at 3,000 pending URLs the index fix took the p50 from 20 ms to 1.2 ms).
 - On the synthetic web the wiki's share of fetches falls from 83-96 % to 22-30 %, and the first independent site is fetched at fetch 2-3 instead of 17-21.
+
+### Fixed
+- **Real-path CI coverage:** the integration job fails if its required Core runtime or local fixture is unavailable, instead of silently skipping end-to-end tests.
+- **Crawler wait cleanup:** release abort listeners and losing timers after each idle/recovery wait, work completion or shutdown, preventing listener accumulation during long-running service operation.
+- **Exact-content duplicate indexing:** when an original page changes, re-evaluate copies of its old content so that surviving content stays searchable; retain explicit canonical aliases.
+- **Safe pruning during crawling:** recheck eligibility at deletion time so URLs promoted to demand or leased after selection survive. Dry runs no longer count the same candidates twice toward domain caps.
+- **Interruptible maintenance:** the CLI yields between pruning transactions so Ctrl-C stops between batches; reports count actual committed removals, including interrupted domain/global-cap pruning.
+- **Private backups:** create backup destinations exclusively with owner-only permissions before SQLite writes; verify integrity, remove failed partial backups and refuse to overwrite existing files.
+- **Discovery-provider cleanup:** cancel rejected HTTP-status and non-JSON response bodies immediately instead of retaining connections until timeout.
+- **Database handles:** close the database if schema initialization fails, avoiding leaked handles and Windows file locks; opening an existing schema-v4 database read-only no longer attempts migration writes.
+
+### Upgrade and compatibility
+- Requires Node.js >= 24.4. The published `@privanet/protocol` and `@privanet/sdk` dependencies remain pinned to `0.3.0-alpha.5`; no new fetch capability or Search API version is required.
+- **Back up before starting 0.5.0.** Startup migrates existing databases to schema v4. Version 0.4.1 cannot read the migrated database; rollback requires restoring the pre-upgrade backup. See [docs/crawl-quality.md](docs/crawl-quality.md#schema-v4-and-migration).
+- Discovery-provider queries and `/sitemap.txt` remain off by default. Enabling the provider explicitly shares query text with its operator; crawled page content still travels through PrivaNet.
+- The separate Core and Proxy audit fixes are not bundled into this Search release. The broader ecosystem audit has not completed its three-clean-pass requirement; this release does not claim a vulnerability-free audit result.
 
 ### Not done
 - XML sitemaps, RSS/Atom, `hreflang`, anchor text and robots `Sitemap:` lines are blocked by the `web.fetch.v1` contract (needs an additive Core change). Near-duplicate detection and boilerplate reduction are not implemented. No live production database was analysed or modified.

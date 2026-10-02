@@ -15,6 +15,25 @@ const doc = (url: string, title: string, text: string, hash: number, extra: Part
   ({ urlKey: urlKey(url), url, finalUrl: url, title, description: '', canonicalUrl: null, language: 'en', text, contentSha256: sha(hash), fetchedAt: 1_000, httpStatus: 200, ...extra });
 const norm = (url: string) => { const p = parseCrawlUrl(url); assert.ok(p.ok, url); return p.url; };
 
+test('changed original promotes its old hash copies while preserving explicit canonical aliases', () => {
+  const db = openDatabase(':memory:'); const s = new DocumentStore(db);
+  try {
+    const original = 'https://a.example/'; const mirror = 'https://b.example/'; const mirror2 = 'https://c.example/';
+    s.upsert(doc(original, 'Original', 'lighthouse history', 1));
+    s.upsert(doc(mirror, 'Mirror', 'lighthouse history', 1));
+    s.upsert(doc(mirror2, 'Mirror two', 'lighthouse history', 1));
+    s.upsert(doc('https://a.example/alias', 'Alias', 'canonical alias', 2, { canonicalUrl: original }));
+    s.upsert(doc(original, 'Changed', 'harbour replacement', 3));
+    assert.equal(s.search('lighthouse').length, 1);
+    assert.equal(s.search('harbour').length, 1);
+    assert.equal(s.search('canonical').length, 0);
+    assert.deepEqual(s.count(), { documents: 4, indexed: 2, duplicates: 2 });
+    // The promoted group remains recoverable when its new representative goes away.
+    s.remove(urlKey(s.search('lighthouse')[0]!.url));
+    assert.equal(s.search('lighthouse').length, 1);
+  } finally { db.close(); }
+});
+
 test('the index and the frontier survive a restart: same file, new process state', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'privasearch-idx-')); t.after(() => rm(dir, { recursive: true, force: true }));
   const path = join(dir, 'var', 'privasearch.sqlite');

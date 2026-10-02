@@ -60,6 +60,17 @@ export class DocumentStore {
         change_count=documents.change_count + CASE WHEN ? AND ? THEN 1 ELSE 0 END`)
       .run(doc.urlKey, doc.url, doc.finalUrl, doc.title, doc.description, doc.canonicalUrl, doc.language, doc.text, doc.contentSha256, doc.fetchedAt, doc.httpStatus, original ?? null,
         canonicalKey, host, previous?.first_seen_at ?? doc.fetchedAt, doc.fetchedAt, doc.lowValue ? 1 : 0, changed ? 1 : 0, changed ? 1 : 0, previous === undefined ? 0 : 1);
+    // A hash duplicate may still hold the old content after this page changes.
+    // Re-evaluate those copies so that content does not disappear from search.
+    // Explicit canonical aliases remain aliases even when their bytes differ.
+    if (changed && previous) {
+      const copies = this.db.prepare(`SELECT url_key AS urlKey, url, final_url AS finalUrl, title, description,
+        canonical_url AS canonicalUrl, language, text, content_sha256 AS contentSha256,
+        fetched_at AS fetchedAt, http_status AS httpStatus, low_value AS lowValue FROM documents
+        WHERE duplicate_of=? AND content_sha256<>? AND (canonical_key IS NULL OR canonical_key<>?)
+        ORDER BY fetched_at, url_key`).all(doc.urlKey, doc.contentSha256, doc.urlKey) as unknown as DocumentInput[];
+      for (const copy of copies) this.upsertWithin(copy);
+    }
     if (original) { this.unindex(doc.urlKey); return { duplicateOf: original, changed, firstSeen: previous === undefined }; }
     this.index(doc.urlKey, doc.title, doc.description, doc.text);
     this.absorbCanonicalDuplicates(doc.urlKey);

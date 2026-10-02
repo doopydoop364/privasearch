@@ -1,10 +1,10 @@
-import { chmodSync, existsSync } from 'node:fs';
-import { DatabaseSync } from 'node:sqlite';
+import { existsSync } from 'node:fs';
+import { backupDatabase } from './backup.js';
 import { analyzeFrontier, formatAnalysis } from './analyze.js';
 import type { FrontierOptions } from './frontier.js';
 import { explainUrl, formatExplanation } from './explain.js';
 import { domainDetail, formatDomain, formatSeeds, seedHealth } from './inspect.js';
-import { formatPrune, prune } from './prune.js';
+import { formatPrune, pruneAsync } from './prune.js';
 import { ConfigError, parseServiceConfig } from './service-config.js';
 
 /**
@@ -51,14 +51,12 @@ if (command === 'analyze') {
   if (args.includes('--apply') && args.includes('--dry-run')) fail('choose --dry-run or --apply, not both');
   const abort = new AbortController(); process.on('SIGINT', () => { console.error('stopping after the current batch...'); abort.abort(); });
   const day = 86400000; const expire = number('--expire-days');
-  const report = prune(dbPath, { now: Date.now(), apply: args.includes('--apply'), signal: abort.signal, policy,
+  const report = await pruneAsync(dbPath, { now: Date.now(), apply: args.includes('--apply'), signal: abort.signal, policy,
     ...(expire === undefined ? {} : { expireMs: expire * day }), ...(number('--keep-per-domain') === undefined ? {} : { keepPerDomain: number('--keep-per-domain') as number }),
     ...(number('--max-total') === undefined ? {} : { maxTotal: number('--max-total') as number }), ...(number('--protect-priority') === undefined ? {} : { protectPriority: number('--protect-priority') as number }),
     ...(number('--batch') === undefined ? {} : { batch: number('--batch') as number }) });
   console.log(formatPrune(report));
 } else {
   const out = option('--out'); if (!out) fail(USAGE); if (existsSync(out as string)) fail('refusing to overwrite an existing file');
-  const db = new DatabaseSync(dbPath, { readOnly: true });
-  try { db.prepare('VACUUM INTO ?').run(out as string); } finally { db.close(); }
-  chmodSync(out as string, 0o600); console.log(`backup written: ${out}`);
+  backupDatabase(dbPath, out as string); console.log(`backup written: ${out}`);
 }

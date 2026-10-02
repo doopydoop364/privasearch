@@ -8,6 +8,7 @@ import type { FetchTransport } from './privanet/transport.js';
 import { languagePreferred, looksLikeSoft404, looksThin } from './language.js';
 import { pathShares, words } from './scoring.js';
 import { idempotencyKeyFor, parseCrawlUrl, urlKey } from './url.js';
+import { waitForWake } from './wait.js';
 
 export interface DriverOptions {
   frontier: Frontier; documents: DocumentStore; transport: FetchTransport; clock?: () => number;
@@ -69,7 +70,6 @@ export class Crawler {
     const summary: PassSummary = { submitted: 0, outcomes: {}, indexed: 0, duplicates: 0, discovered: 0, invalidResults: 0, transportErrors: 0, trapped: 0, changed: 0 };
     const concurrency = Math.max(1, options.concurrency ?? this.batch); const idleMs = Math.max(1, options.idleMs ?? 25);
     const active = new Set<Promise<void>>();
-    const nap = (ms: number) => new Promise<void>(resolve => { const timer = setTimeout(resolve, ms); options.signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true }); });
     while (!options.signal?.aborted && !options.until?.()) {
       const room = concurrency - active.size;
       // While PrivaNet is unreachable nothing new is leased: the frontier is not churned through failing submissions.
@@ -81,7 +81,7 @@ export class Crawler {
         }
       }
       // Wake as soon as any crawl finishes (a slot is free), or after a short nap when nothing is due yet.
-      await Promise.race([...active, nap(idleMs)]);
+      await waitForWake(active, idleMs, options.signal);
     }
     await Promise.allSettled([...active]); // never abandon a submitted job: its result must be ingested or its key retried
     return summary;

@@ -37,8 +37,11 @@ export class HttpDiscoveryProvider implements DiscoveryProvider {
   async discover(query: string, limit: number): Promise<string[]> {
     const url = new URL(this.endpoint); url.searchParams.set('q', query.slice(0, 200)); url.searchParams.set('format', 'json');
     const response = await this.fetchImpl(url, { method: 'GET', redirect: 'error', credentials: 'omit', headers: { accept: 'application/json', 'user-agent': 'PrivaSearch-discovery' }, signal: AbortSignal.timeout(this.timeoutMs) });
-    if (!response.ok) throw new Error(`provider status ${response.status}`);
-    const type = response.headers.get('content-type') ?? ''; if (!/json/i.test(type)) throw new Error('provider did not answer with JSON');
+    const type = response.headers.get('content-type') ?? '';
+    if (!response.ok || !/json/i.test(type)) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(!response.ok ? `provider status ${response.status}` : 'provider did not answer with JSON');
+    }
     const text = await readCapped(response, this.maxBytes); let body: unknown; try { body = JSON.parse(text); } catch { throw new Error('provider answer is not JSON'); }
     return pickUrls(body, limit);
   }
