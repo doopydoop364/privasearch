@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { initSchema, inTransaction } from './db.js';
+import { registrableDomain } from './domain.js';
 import { parseCrawlUrl, urlKey } from './url.js';
 
 /**
@@ -95,11 +96,16 @@ export class DocumentStore {
   outlinks(srcKey: string): Array<{ key: string; url: string; host: string }> {
     return (this.db.prepare('SELECT dst_key AS key, dst_url AS url, dst_host AS host FROM links WHERE src_key=? ORDER BY dst_url').all(srcKey) as unknown as Array<{ key: string; url: string; host: string }>);
   }
-  /** For each page, the number of distinct OTHER hosts that link to it: the link signal used by ranking (a site linking to itself says nothing). */
+  /**
+   * For each page, the number of distinct OTHER registrable domains that link to it: the link signal used by ranking. A site linking to itself says nothing, and
+   * fifty language editions or subdomains of one site are one voice, so a link farm of subdomains (or one giant site) cannot manufacture authority.
+   */
   inboundHosts(keys: string[]): Map<string, number> {
     const out = new Map<string, number>(); if (keys.length === 0) return out;
-    const rows = this.db.prepare(`SELECT dst_key, COUNT(DISTINCT src_host) AS n FROM links WHERE dst_key IN (${keys.map(() => '?').join(',')}) AND src_host<>dst_host GROUP BY dst_key`).all(...keys) as unknown as Array<{ dst_key: string; n: number }>;
-    for (const row of rows) out.set(row.dst_key, Number(row.n)); return out;
+    const rows = this.db.prepare(`SELECT dst_key, src_host, dst_host FROM links WHERE dst_key IN (${keys.map(() => '?').join(',')}) AND src_host<>dst_host GROUP BY dst_key, src_host`).all(...keys) as unknown as Array<{ dst_key: string; src_host: string; dst_host: string }>;
+    const sets = new Map<string, Set<string>>();
+    for (const row of rows) { const home = registrableDomain(row.dst_host); const src = registrableDomain(row.src_host); if (src === home) continue; let set = sets.get(row.dst_key); if (!set) { set = new Set(); sets.set(row.dst_key, set); } set.add(src); }
+    for (const [key, set] of sets) out.set(key, set.size); return out;
   }
 
   /** Removes a page from the store, the index and the link graph (the site now says noindex, or the page is gone). Pages that were its duplicates are re-evaluated. */

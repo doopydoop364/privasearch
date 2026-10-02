@@ -17,6 +17,8 @@ export interface DriverOptions {
   infrastructureRetryMs?: number; infrastructureBackoffBaseMs?: number;
   /** Aborting this gives up on every submitted job still waiting for its result (shutdown past its deadline); each URL is released and resubmitted under the same key later. */
   hardStop?: AbortSignal;
+  /** Opt-in: once a host has shown three useful pages, ask for its /sitemap.txt once and admit up to 100 same-domain URLs it lists (plain-text sitemaps only: web.fetch.v1 returns no XML). */
+  sitemapTxt?: boolean;
 }
 export interface PassSummary {
   submitted: number; outcomes: Partial<Record<FetchResult['outcome'], number>>;
@@ -140,9 +142,27 @@ export class Crawler {
     return undefined;
   }
 
+  /** One probe per host, ever (the row itself is the memory): after three useful pages of the host's domain, ask for /sitemap.txt. */
+  private maybeProbeSitemap(item: Leased, domain: string, now: number): void {
+    const useful = this.o.frontier.domainUseful(domain); if (useful < 3) return;
+    let origin: string; try { origin = new URL(item.url).origin; } catch { return; }
+    this.o.frontier.add(`${origin}/sitemap.txt`, { queue: 'PUBLIC', source: 'sitemap', depth: Math.min(item.depth, 1), priority: 55 }, now);
+  }
+  private ingestSitemap(item: Leased, text: string, summary: PassSummary, now: number): void {
+    const frontier = this.o.frontier; const home = frontier.model.domainOf(item.host); let taken = 0;
+    for (const line of text.split(/\r?\n/)) {
+      const raw = line.trim(); if (!/^https?:\/\//i.test(raw)) continue;
+      const parsed = parseCrawlUrl(raw, undefined, frontier.policy.trackingParams); if (!parsed.ok || frontier.model.domainOf(parsed.host) !== home) continue; // a sitemap may only name its own site
+      if (++taken > 100) break; // bounded: web.fetch.v1 returns at most 10 KiB of text, and a site must not fill the frontier through one file
+      const added = frontier.add(parsed.url, { queue: 'PUBLIC', source: 'sitemap', depth: 1 }, now);
+      if (added === 'ADDED') summary.discovered++; else if (added !== 'EXISTS') summary.trapped++;
+    }
+  }
+
   private ingest(item: Leased, result: FetchResult, summary: PassSummary): void {
     const page = result.page; if (!page) return;
     const frontier = this.o.frontier; const policy = frontier.policy; const now = this.clock();
+    if (item.source === 'sitemap') { this.ingestSitemap(item, page.text ?? '', summary, now); return; } // a sitemap is a list of names, not a page: never indexed
     let stored: { duplicateOf?: string; changed: boolean } | undefined; let kind: 'useful' | 'duplicate' | 'low_value' | undefined;
     // A short "not found" page served with HTTP 200, or a page with almost nothing on it: kept (down-ranked, never deleted) and counted against its domain's yield.
     const lowValue = looksLikeSoft404(page.title ?? '', page.text ?? '', page.links.length) || looksThin(page.text ?? '', page.links.length);
@@ -171,6 +191,7 @@ export class Crawler {
       const added = frontier.add(link.url, { queue: 'PUBLIC', depth: item.depth + 1, source: 'discovered', external: link.kind === 'external', relevant: link.relevant }, now);
       if (added === 'ADDED') summary.discovered++; else if (added !== 'EXISTS') summary.trapped++;
     }
+    if (kind === 'useful' && this.o.sitemapTxt) this.maybeProbeSitemap(item, srcDomain, now);
     if (kind === 'useful') for (const domain of new Set(candidates.filter(c => c.kind === 'external').map(c => c.domain))) frontier.noteDomainLink(srcDomain, domain); // independent referring domains, from real pages only
     if (stored && !stored.duplicateOf) this.o.documents.setLinks(item.urlKey, item.host, graph);
     // A page that names another page of the same site as its canonical version makes that page worth fetching (never another site: a page cannot send the crawler elsewhere).

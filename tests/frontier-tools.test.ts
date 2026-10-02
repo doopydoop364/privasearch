@@ -116,3 +116,26 @@ test('the command line: analyze --json, explain, prune dry-run then apply, backu
     assert.equal(spawnSync(process.execPath, [CLI, 'analyze', '--db', path], { env: { ...cliEnv, PRIVASEARCH_EXPLORE_SHARES: '50/20/10' }, encoding: 'utf8' }).status, 78); // the service's own validation
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('seeds: classes come from the seed file, health from what actually happened, and the view is read-only', async () => {
+  const { parseServiceConfig, ConfigError } = await import('../src/service-config.js');
+  const config = parseServiceConfig({}, '# comment\nhttps://seed.example/ class=official\nhttps://other.example/docs\n');
+  assert.deepEqual(config.seeds, ['https://seed.example/', 'https://other.example/docs']); assert.deepEqual(config.seedClasses, { 'https://seed.example/': 'official' });
+  assert.throws(() => parseServiceConfig({}, 'https://a.example/ klass=docs'), ConfigError);
+  const { seedHealth, formatSeeds, domainDetail, formatDomain } = await import('../src/inspect.js');
+  const { dir, path } = build();
+  try {
+    const db = openDatabase(path); const f = new Frontier(db, {}); f.markSeedClass('https://seed.example/', 'official');
+    db.prepare(`UPDATE urls SET state='DONE', last_outcome='FETCHED', last_http=200, fetched_at=? WHERE url='https://seed.example/'`).run(NOW);
+    f.add('https://dead.example/', { queue: 'PUBLIC', source: 'seed' }, NOW); db.prepare(`UPDATE urls SET state='DONE', last_outcome='HTTP_ERROR', last_http=404 WHERE url='https://dead.example/'`).run();
+    f.add('https://moved.example/start', { queue: 'PUBLIC', source: 'seed' }, NOW); db.prepare(`UPDATE urls SET state='DONE', last_outcome='REDIRECT' WHERE url='https://moved.example/start'`).run(); db.close();
+    const bytes = readFileSync(path); const health = seedHealth(path, NOW + 1000);
+    const verdict = (url: string) => health.find(h => h.url === url)?.verdict;
+    assert.equal(verdict('https://seed.example/'), 'HEALTHY'); assert.equal(verdict('https://dead.example/'), 'DEGRADED'); assert.equal(verdict('https://moved.example/start'), 'REDIRECTED');
+    assert.equal(health.find(h => h.url === 'https://seed.example/')?.seedClass, 'official'); assert.match(formatSeeds(health), /DEGRADED.*dead\.example/);
+    const detail = domainDetail(path, 'big.org', NOW); assert.ok(detail); assert.ok(detail.pending > 100); assert.ok(detail.topPending.length === 10 && detail.topPending[0]!.priority >= detail.topPending[9]!.priority); assert.match(formatDomain(detail), /Domain big\.org/);
+    assert.equal(domainDetail(path, 'nonexistent.example', NOW), undefined); assert.deepEqual(readFileSync(path), bytes);
+    const cli = (...a: string[]) => spawnSync(process.execPath, [CLI, ...a, '--db', path], { env: cliEnv, encoding: 'utf8' });
+    assert.match(cli('seeds').stdout, /3 seed\(s\)|seed\(s\)/); assert.match(cli('domain', 'big.org').stdout, /Top pending/); assert.equal(cli('domain', 'nope.example').status, 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

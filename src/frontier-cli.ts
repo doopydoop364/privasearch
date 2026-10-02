@@ -3,6 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { analyzeFrontier, formatAnalysis } from './analyze.js';
 import type { FrontierOptions } from './frontier.js';
 import { explainUrl, formatExplanation } from './explain.js';
+import { domainDetail, formatDomain, formatSeeds, seedHealth } from './inspect.js';
 import { formatPrune, prune } from './prune.js';
 import { ConfigError, parseServiceConfig } from './service-config.js';
 
@@ -12,12 +13,16 @@ import { ConfigError, parseServiceConfig } from './service-config.js';
  *
  *   analyze [--top N] [--json]        read-only concentration report; works on any schema version, never migrates
  *   explain <url>                     read-only: why this URL has the priority and position it has (schema 4)
+ *   domain <domain>                   read-only: one registrable domain in detail (counters, hosts, top pending URLs)
+ *   seeds                             read-only: seed health (fetched? redirected? blocked? failing?)
  *   prune [--dry-run] [--apply] ...   remove never-fetched discovered URLs the current rules would refuse, expired ones, and those over a budget
  *   backup --out FILE                 consistent copy of the database (VACUUM INTO), safe while the service runs
  */
 const USAGE = `usage: frontier-cli <command> [--db PATH]
   analyze [--top N] [--json]
   explain <url>
+  domain <domain>
+  seeds
   prune [--dry-run | --apply] [--expire-days N] [--keep-per-domain N] [--max-total N] [--protect-priority N] [--batch N]
   backup --out FILE`;
 const args = process.argv.slice(2); const command = args.shift();
@@ -25,7 +30,7 @@ const option = (name: string): string | undefined => { const i = args.indexOf(na
 const number = (name: string): number | undefined => { const raw = option(name); if (raw === undefined) return undefined; const n = Number(raw); if (!Number.isFinite(n) || n < 0) { console.error(`${name} must be a non-negative number`); process.exit(2); } return n; };
 const dbPath = option('--db') ?? process.env.PRIVASEARCH_DB ?? '';
 const fail = (message: string, code = 2): never => { console.error(message); process.exit(code); };
-if (!command || !['analyze', 'explain', 'prune', 'backup'].includes(command)) fail(USAGE);
+if (!command || !['analyze', 'explain', 'domain', 'seeds', 'prune', 'backup'].includes(command)) fail(USAGE);
 if (dbPath === '' || !existsSync(dbPath)) fail('the database file was not found; pass --db PATH or set PRIVASEARCH_DB');
 let policy: FrontierOptions = {};
 try { policy = parseServiceConfig(process.env).frontier; }
@@ -37,6 +42,11 @@ if (command === 'analyze') {
 } else if (command === 'explain') {
   const url = args.find(a => !a.startsWith('--') && a !== option('--db')); if (!url) fail(USAGE);
   const now = Date.now(); console.log(formatExplanation(explainUrl(dbPath, url as string, now, policy), now));
+} else if (command === 'domain') {
+  const name = args.find(a => !a.startsWith('--') && a !== option('--db')); if (!name) fail(USAGE);
+  const detail = domainDetail(dbPath, name as string, Date.now()); console.log(detail ? formatDomain(detail) : `no such domain in the frontier: ${name}`); if (!detail) process.exit(1);
+} else if (command === 'seeds') {
+  console.log(formatSeeds(seedHealth(dbPath, Date.now())));
 } else if (command === 'prune') {
   if (args.includes('--apply') && args.includes('--dry-run')) fail('choose --dry-run or --apply, not both');
   const abort = new AbortController(); process.on('SIGINT', () => { console.error('stopping after the current batch...'); abort.abort(); });

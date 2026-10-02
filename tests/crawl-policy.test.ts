@@ -106,6 +106,7 @@ test('crawl traps: calendars, filters, session ids, repeating paths and deep pag
     'https://s.example/p?sessionid=abc': 'SESSION_OR_FILTER_PARAM', 'https://s.example/p?sort=price&id=3': 'SESSION_OR_FILTER_PARAM', 'https://s.example/p?PHPSESSID=1': 'SESSION_OR_FILTER_PARAM',
     'https://s.example/blog?page=99': 'DEEP_PAGINATION', 'https://s.example/blog/page/45/': 'DEEP_PAGINATION',
     'https://s.example/blog?page=3': undefined, 'https://s.example/blog/page/2/': undefined, 'https://s.example/about': undefined, 'https://s.example/2031/05/14/post-title': undefined,
+    ['https://s.example/' + 'z'.repeat(130)]: 'LONG_SEGMENT', 'https://s.example/p;jsessionid=ABC123': 'PATH_SESSION', 'https://s.example/p?a=x&b=x&c=x': 'REPEATED_PARAM_VALUE', 'https://s.example/p?a=1&b=2&c=1': undefined, 'https://s.example/p?a=x&b=x': undefined,
     'https://s.example/docs/guide?id=7': undefined, 'https://s.example/a/b/a/b': undefined,
   };
   for (const [url, reason] of Object.entries(trap)) assert.equal(crawlTrap(url), reason, url);

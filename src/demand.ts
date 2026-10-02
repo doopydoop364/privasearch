@@ -2,10 +2,11 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { initSchema } from './db.js';
 import { DocumentStore, queryTerms } from './documents.js';
-import { discover, frontierSource, linkSource, templateSource } from './discovery.js';
+import { discover, frontierSource, linkSource, templateSource, urlSource } from './discovery.js';
 import type { CandidateSource } from './discovery.js';
 import { Frontier } from './frontier.js';
 import { DEMAND_PRIORITY } from './policy.js';
+import type { DiscoveryProvider } from './provider.js';
 import type { SearchResult } from './ranking.js';
 
 /**
@@ -34,15 +35,20 @@ export interface CrawlInfo { triggered: boolean; state: CrawlState; candidates: 
 export interface DemandOptions {
   clock?: () => number; minStrong?: number; cooldownMs?: number; maxCooldownMs?: number; maxCandidates?: number; maxPendingDemand?: number; maxQueriesPerHour?: number;
   priority?: number; templates?: string[]; sources?: CandidateSource[];
+  /** Optional: names more URLs for a weak search from an operator-chosen endpoint (see provider.ts: the query leaves this process, so it is opt-in). At most `providerMaxPerHour` lookups per hour. */
+  provider?: DiscoveryProvider; providerMaxPerHour?: number; onProvider?: (outcome: { ok: boolean; named: number; added: number }) => void;
 }
 const HOUR = 3600000;
 
 export class DemandPlanner {
-  private readonly o: Required<Omit<DemandOptions, 'sources' | 'templates'>>; private readonly sources: CandidateSource[]; private readonly salt: string;
+  private readonly o: Required<Omit<DemandOptions, 'sources' | 'templates' | 'provider' | 'providerMaxPerHour' | 'onProvider'>>; private readonly sources: CandidateSource[]; private readonly salt: string;
+  private readonly provider: DiscoveryProvider | undefined; private readonly providerMaxPerHour: number; private readonly onProvider: DemandOptions['onProvider'];
+  private providerCalls: number[] = [];
   constructor(private readonly db: DatabaseSync, private readonly frontier: Frontier, private readonly documents: DocumentStore, options: DemandOptions = {}) {
     initSchema(db);
-    this.o = { clock: Date.now, minStrong: 3, cooldownMs: 30 * 60000, maxCooldownMs: 24 * HOUR, maxCandidates: 12, maxPendingDemand: 300, maxQueriesPerHour: 30, priority: DEMAND_PRIORITY, ...options } as Required<Omit<DemandOptions, 'sources' | 'templates'>>;
-    this.sources = options.sources ?? [frontierSource, linkSource, templateSource(options.templates ?? [])];
+    this.o = { clock: Date.now, minStrong: 3, cooldownMs: 30 * 60000, maxCooldownMs: 24 * HOUR, maxCandidates: 12, maxPendingDemand: 300, maxQueriesPerHour: 30, priority: DEMAND_PRIORITY, ...options } as Required<Omit<DemandOptions, 'sources' | 'templates' | 'provider' | 'providerMaxPerHour' | 'onProvider'>>;
+    this.provider = options.provider; this.providerMaxPerHour = options.providerMaxPerHour ?? 20; this.onProvider = options.onProvider;
+    this.sources = options.sources ?? [urlSource, frontierSource, linkSource, templateSource(options.templates ?? [])];
     const stored = (db.prepare(`SELECT v FROM meta WHERE k='query_salt'`).get() as { v: string } | undefined)?.v;
     if (stored) this.salt = stored; else { this.salt = randomBytes(24).toString('hex'); db.prepare(`INSERT INTO meta (k,v) VALUES ('query_salt', ?)`).run(this.salt); }
   }
@@ -73,7 +79,7 @@ export class DemandPlanner {
 
     const terms = [...new Set(queryTerms(query).map(t => t.normalize('NFD').replace(/\p{M}/gu, '')))];
     // Ask for more names than will be queued: URLs already waiting as demand work are in progress, and the cap applies to NEW work so a query that stays weak moves on.
-    const urls = discover(this.sources, { db: this.db, documents: this.documents, terms, hits: result.hits, limit: this.o.maxCandidates * 3 });
+    const urls = discover(this.sources, { db: this.db, documents: this.documents, terms, hits: result.hits, limit: this.o.maxCandidates * 3, query });
     let fresh = 0; let pending = 0;
     for (const url of urls) {
       const before = this.frontier.getByUrl(url);
@@ -83,11 +89,26 @@ export class DemandPlanner {
       const after = this.frontier.getByUrl(url);
       if (after?.state === 'PENDING' && after.queue === 'DEMAND') { pending++; if (isNew) fresh++; }
     }
+    this.askProvider(query, now);
     if (pending === 0) { this.db.prepare('UPDATE queries SET last_crawl_at=? WHERE qkey=?').run(now, key); return { triggered: false, state: 'no_candidates', candidates: 0 }; }
     // Everything named is already queued as demand work: crawling is in progress, nothing new was started, and the round does not count against the query.
     if (fresh === 0) { this.db.prepare('UPDATE queries SET last_crawl_at=? WHERE qkey=?').run(now, key); return { triggered: false, state: 'scheduled', candidates: pending }; }
     this.db.prepare('UPDATE queries SET last_crawl_at=?, crawl_rounds=crawl_rounds+1 WHERE qkey=?').run(now, key);
     return { triggered: true, state: 'scheduled', candidates: pending };
+  }
+
+  /**
+   * Fire-and-forget: the search that triggered this is never delayed or failed by a provider. The provider's names go through the same admission as local candidates (DEMAND
+   * queue, so an explicit weak search outranks background work) and count against nothing but admission rules. Only a weak search that is actually being scheduled gets here.
+   */
+  private askProvider(query: string, now: number): void {
+    const provider = this.provider; if (!provider) return;
+    this.providerCalls = this.providerCalls.filter(t => now - t < HOUR); if (this.providerCalls.length >= this.providerMaxPerHour) return; this.providerCalls.push(now);
+    void provider.discover(query, this.o.maxCandidates).then(urls => {
+      let added = 0; const at = this.o.clock();
+      for (const url of urls) { if (this.frontier.pendingDemand() >= this.o.maxPendingDemand) break; const result = this.frontier.add(url, { queue: 'DEMAND', priority: this.o.priority, source: 'provider' }, at); if (result === 'ADDED') added++; }
+      this.onProvider?.({ ok: true, named: urls.length, added });
+    }).catch(() => this.onProvider?.({ ok: false, named: 0, added: 0 })); // the reason is not logged: it can echo the endpoint or the query
   }
 
   /**

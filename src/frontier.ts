@@ -38,7 +38,7 @@ export interface FrontierOptions extends CrawlPolicyOptions {
   /** The share of each lease reserved for recrawls (when any are due), so endless discovery cannot starve refreshing and the reverse. */
   recrawlShare?: number;
 }
-export interface Leased { urlKey: string; url: string; host: string; queue: Queue; generation: number; depth: number; validators?: { etag?: string; lastModified?: string } }
+export interface Leased { urlKey: string; url: string; host: string; queue: Queue; generation: number; depth: number; source: Source; validators?: { etag?: string; lastModified?: string } }
 export type AddResult = 'ADDED' | 'EXISTS' | UrlRejection | 'TOO_DEEP' | 'HOST_BUDGET' | 'DOMAIN_BUDGET' | 'FAMILY_BUDGET' | 'GLOBAL_BUDGET' | 'LOW_VALUE' | 'LANGUAGE_FILTERED' | `TRAP:${TrapReason}`;
 /** Why a discovered link was or was not admitted, as counted since process start (`Frontier.admission`). */
 export type AdmissionReason = 'ADDED' | 'EXISTS' | 'REJECTED_URL' | 'TOO_DEEP' | 'HOST_BUDGET' | 'DOMAIN_BUDGET' | 'FAMILY_BUDGET' | 'GLOBAL_BUDGET' | 'LOW_VALUE' | 'LANGUAGE_FILTERED' | 'TRAP';
@@ -118,6 +118,8 @@ export class Frontier {
         this.db.prepare(`UPDATE urls SET queue='DEMAND', source='demand', priority=MAX(priority, ?) WHERE url_key=? AND state='PENDING'`).run(e.priority.total, key);
         // Due now, unless it is waiting out a failure backoff: demand never turns repeated searches into repeated hits on a failing URL.
         this.db.prepare(`UPDATE urls SET next_at=MIN(next_at, ?) WHERE url_key=? AND state='PENDING' AND attempts=0`).run(now, key);
+        // A page someone asks about again is worth refreshing: a finished URL not fetched for `recrawlMinMs` becomes due now. The same floor is the cooldown, so repeating a search never turns into repeated fetches.
+        this.db.prepare(`UPDATE urls SET next_at=MIN(next_at, ?) WHERE url_key=? AND state='DONE' AND ? - COALESCE(fetched_at, 0) >= ?`).run(now, key, now, this.o.recrawlMinMs);
       }
       else if (source === 'seed') this.db.prepare(`UPDATE urls SET source='seed', priority=MAX(priority, ?) WHERE url_key=?`).run(e.priority.total, key); // seeds are re-marked at every start, so they stay protected from pruning
       else if (e.priority.total > (e.knownPriority ?? 0)) this.db.prepare(`UPDATE urls SET priority=? WHERE url_key=?`).run(e.priority.total, key);
@@ -141,7 +143,7 @@ export class Frontier {
     const none = { total: 0, base: 0, external: 0, relevance: 0, language: 0, query: 0 };
     const parsed = parseCrawlUrl(raw, undefined, this.policy.trackingParams);
     if (!parsed.ok) return { verdict: parsed.reason, source: options.source ?? 'seed', priority: none, domain: '', languageHint: undefined };
-    const depth = options.depth ?? 0; const discovered = options.source === 'discovered';
+    const depth = options.depth ?? 0; const discovered = options.source === 'discovered' || options.source === 'sitemap'; // sitemap entries are judged like links: a sitemap is operator-controlled by the site, not by us
     const source: Source = options.source ?? (options.queue === 'DEMAND' ? 'demand' : 'seed');
     const domain = this.model.domainOf(parsed.host); const hint = urlLanguageHint(parsed.url); const hintAllowed = languagePreferred(hint, this.policy.preferredLanguages);
     // A caller that names neither a priority nor a source gets 0 (an operator-added URL); one that names a source gets that source's scored priority.
@@ -202,10 +204,12 @@ export class Frontier {
         const validators = { ...(row.etag ? { etag: row.etag } : {}), ...(row.last_modified ? { lastModified: row.last_modified } : {}) };
         // A recrawl is background work whatever queue first brought the URL in; only a pending demand request uses the demand credential.
         const queue: Queue = row.state === 'PENDING' ? row.queue : 'PUBLIC';
-        out.push({ urlKey: row.url_key, url: row.url, host: row.host, queue, generation: row.generation, depth: row.depth, ...(Object.keys(validators).length ? { validators } : {}) });
+        out.push({ urlKey: row.url_key, url: row.url, host: row.host, queue, generation: row.generation, depth: row.depth, source: row.source, ...(Object.keys(validators).length ? { validators } : {}) });
       };
-      const take = (rows: UrlRow[], cap: number) => {
+      const take = (rows: UrlRow[], cap: number, spread = false) => {
         let taken = 0;
+        // Recrawls: the most overdue URL of every domain before a second URL of any domain, so one giant site's backlog cannot monopolise the refresh share.
+        if (spread) { const seen = new Set<string | null>(); const first: UrlRow[] = []; const later: UrlRow[] = []; for (const r of rows) { (seen.has(r.domain) ? later : first).push(r); seen.add(r.domain); } rows = [...first, ...later]; }
         for (const row of rows) {
           if (taken >= cap || out.length >= want) break; if (hosts.has(row.host)) continue;
           if (row.domain && !this.hasRoom(row.domain, this.model.familyOfDomain(row.domain))) continue;
@@ -216,10 +220,10 @@ export class Frontier {
       const rest = want - out.length; if (rest <= 0) return out;
       const recrawlQuota = rest >= 2 ? Math.ceil(rest * this.policy_recrawlShare()) : (this.singleSlotTurn++ % 4 === 3 ? 1 : 0);
       const recrawl = () => select(`u.state IN ('DONE','FAILED')`, `CASE u.state WHEN 'DONE' THEN 0 ELSE 1 END, u.next_at, u.url_key`, rest);
-      take(recrawl(), recrawlQuota);
+      take(recrawl(), recrawlQuota, true);
       const vmin = Number((this.db.prepare('SELECT COALESCE(MIN(vtime),0) AS v FROM domains WHERE pending > 0').get() as { v: number }).v);
       while (out.length < want) { const row = this.pickFresh(now, hosts, vmin); if (!row) break; claim(row); }
-      take(recrawl(), want - out.length);
+      take(recrawl(), want - out.length, true);
       return out;
     });
   }
@@ -308,20 +312,22 @@ export class Frontier {
     const current = previous ?? this.o.recrawlMs;
     if (changed === null) return current;
     if (changed) return Math.max(this.o.recrawlMinMs, Math.round(current / 2));
-    const inbound = Number((this.db.prepare('SELECT COUNT(DISTINCT src_host) AS n FROM links WHERE dst_key=? AND src_host<>dst_host').get(key) as { n: number }).n);
+    // Importance = independent referring DOMAINS (a giant site's subdomains are one voice); looking at 25 distinct linking hosts is enough to tell 5 domains.
+    const home = this.model.domainOf((this.db.prepare('SELECT host FROM urls WHERE url_key=?').get(key) as { host: string } | undefined)?.host ?? '');
+    const inbound = new Set((this.db.prepare('SELECT DISTINCT src_host FROM links WHERE dst_key=? AND src_host<>dst_host LIMIT 25').all(key) as Array<{ src_host: string }>).map(r => this.model.domainOf(r.src_host)).filter(d => d !== home)).size;
     return Math.min(inbound >= 5 ? Math.min(this.o.recrawlMaxMs, this.o.importantRecrawlMaxMs) : this.o.recrawlMaxMs, current * 2);
   }
 
   /** Applies one validated fetch result. Every one of the twelve outcomes has an explicit policy here. */
   complete(key: string, result: FetchResult, now: number): void {
     this.transaction(() => {
-      const row = this.db.prepare('SELECT host, queue, priority, depth, content_sha256, interval_ms FROM urls WHERE url_key=?').get(key) as { host: string; queue: Queue; priority: number; depth: number; content_sha256: string | null; interval_ms: number | null } | undefined; if (!row) return;
+      const row = this.db.prepare('SELECT host, queue, priority, depth, content_sha256, interval_ms, source FROM urls WHERE url_key=?').get(key) as { host: string; queue: Queue; priority: number; depth: number; content_sha256: string | null; interval_ms: number | null; source: Source } | undefined; if (!row) return;
       const delay = Math.max(this.o.hostDelayMs, (result.robots.crawlDelaySec ?? 0) * 1000);
       // Requesting a host, whatever came back, spends its politeness budget; a success clears its failure streak.
       this.db.prepare(`INSERT INTO hosts (host, next_allowed_at) VALUES (?,?) ON CONFLICT(host) DO UPDATE SET next_allowed_at=MAX(next_allowed_at, excluded.next_allowed_at)`).run(row.host, now + delay);
       const http = result.httpStatus ?? null; const gone = now + this.o.goneRecheckMs;
       const errored = result.outcome === 'FETCH_FAILED' || result.outcome === 'UNSUPPORTED_CONTENT_TYPE' || result.outcome === 'TOO_LARGE' || (result.outcome === 'HTTP_ERROR' && result.httpStatus !== 429);
-      if (errored) this.recordPage(key, 'error', now);
+      if (errored && row.source !== 'sitemap') this.recordPage(key, 'error', now); // a missing sitemap.txt is a guess that did not pay off, not a flaw of the site
       switch (result.outcome) {
         case 'FETCHED': {
           const changed = row.content_sha256 === null || result.contentSha256 === undefined ? null : row.content_sha256 !== result.contentSha256;
@@ -390,6 +396,13 @@ export class Frontier {
     const current = domainWeight(row, now, this.policy).yieldEff; const sample = kind === 'useful' ? 1 : 0;
     this.db.prepare(`UPDATE domains SET fetched = fetched + ?, useful = useful + ?, duplicates = duplicates + ?, low_value = low_value + ?, errors = errors + ?, yield = ?, yield_at = ? WHERE domain = ?`)
       .run(kind === 'error' ? 0 : 1, kind === 'useful' ? 1 : 0, kind === 'duplicate' ? 1 : 0, kind === 'low_value' ? 1 : 0, kind === 'error' ? 1 : 0, Math.min(1, Math.max(0, current * 0.9 + sample * 0.1)), now, row.domain);
+  }
+  /** Useful pages (indexed, not duplicate, not low-value) fetched so far from a registrable domain. */
+  domainUseful(domain: string): number { return Number((this.db.prepare('SELECT useful AS n FROM domains WHERE domain=?').get(domain) as { n: number } | undefined)?.n ?? 0); }
+  /** Labels the domain of a seed with an operator-chosen class (official, docs, news, forum, ...): shown by `frontier-cli seeds` and `explain`, never used to rank. */
+  markSeedClass(raw: string, seedClass: string): void {
+    const parsed = parseCrawlUrl(raw, undefined, this.policy.trackingParams); if (!parsed.ok) return;
+    this.db.prepare('UPDATE domains SET seed_class = ? WHERE domain = ?').run(seedClass, this.model.domainOf(parsed.host));
   }
   /** Records that a page of `srcDomain` links to `dstDomain` (once per pair): the count of independent referring domains is the authority signal. */
   noteDomainLink(srcDomain: string, dstDomain: string): void {

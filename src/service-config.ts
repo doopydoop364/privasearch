@@ -2,6 +2,7 @@ import { PrivaNetClient } from '@privanet/sdk';
 import { parseFamilies } from './domain.js';
 import type { FrontierOptions } from './frontier.js';
 import { resolvePolicy } from './policy-options.js';
+import { validateProviderEndpoint } from './provider.js';
 
 /**
  * Configuration for the long-running service, from environment variables only. Credentials are never accepted on the command line (they would
@@ -13,8 +14,12 @@ import { resolvePolicy } from './policy-options.js';
 export interface ServiceConfig {
   dbPath: string; host: string; port: number; apiToken?: string;
   privanet?: { coordinatorUrl: string; tokens: { DEMAND: string; PUBLIC: string }; allowInsecureLoopback: boolean; waitTimeoutMs: number; pollMs: number };
-  concurrency: number; seeds: string[]; templates: string[];
+  concurrency: number; seeds: string[]; /** Optional operator labels from the seed file (`URL class=docs`), keyed by seed URL. */ seedClasses?: Record<string, string>; templates: string[];
   frontier: FrontierOptions;
+  /** Opt-in plain-text sitemap discovery (`/sitemap.txt`, once per host, at most 100 same-domain URLs). */
+  sitemapTxt?: boolean;
+  /** Optional discovery provider (provider.ts): off unless an endpoint AND the explicit send-queries acknowledgement are configured. */
+  provider?: { endpoint: string; maxPerHour: number; timeoutMs: number };
   demand: { enabled: boolean; minStrong: number; cooldownMs: number; maxCandidates: number; maxPendingDemand: number; maxQueriesPerHour: number };
   shutdownMs: number; progressMs: number;
 }
@@ -56,7 +61,18 @@ export function parseServiceConfig(env: Record<string, string | undefined>, seed
     privanet = { coordinatorUrl: urlSetting as string, tokens: { DEMAND: demand as string, PUBLIC: pub as string }, allowInsecureLoopback,
       waitTimeoutMs: integer('PRIVASEARCH_WAIT_TIMEOUT_MS', env.PRIVASEARCH_WAIT_TIMEOUT_MS, 60000, 1000, 600000), pollMs: integer('PRIVASEARCH_POLL_MS', env.PRIVASEARCH_POLL_MS, 100, 10, 5000) };
   }
-  const seeds = (seedFileText ?? '').split(/\r?\n/).map(line => line.trim()).filter(line => line !== '' && !line.startsWith('#'));
+  const seeds: string[] = []; const seedClasses: Record<string, string> = {};
+  for (const line of (seedFileText ?? '').split(/\r?\n/).map(l => l.trim()).filter(l => l !== '' && !l.startsWith('#'))) {
+    const [url, ...rest] = line.split(/\s+/); seeds.push(url as string);
+    for (const token of rest) { const m = /^class=([a-z0-9_-]{1,24})$/i.exec(token); if (!m?.[1]) throw new ConfigError(['PRIVASEARCH_SEEDS'], 'a seed line is "URL" or "URL class=name" (letters, digits, - and _)'); seedClasses[url as string] = m[1].toLowerCase(); }
+  }
+  let provider: ServiceConfig['provider'];
+  if (env.PRIVASEARCH_DISCOVERY_PROVIDER_URL) {
+    // The query leaves PrivaSearch when a provider is used, so the operator must say so explicitly; the endpoint is never echoed (it can embed a secret path).
+    if (env.PRIVASEARCH_DISCOVERY_PROVIDER_SEND_QUERIES !== 'true') throw new ConfigError(['PRIVASEARCH_DISCOVERY_PROVIDER_SEND_QUERIES'], 'a discovery provider receives the words of weak searches: set PRIVASEARCH_DISCOVERY_PROVIDER_SEND_QUERIES=true to confirm that is acceptable');
+    try { validateProviderEndpoint(env.PRIVASEARCH_DISCOVERY_PROVIDER_URL); } catch (error) { throw new ConfigError(['PRIVASEARCH_DISCOVERY_PROVIDER_URL'], error instanceof Error ? error.message : 'invalid provider endpoint'); }
+    provider = { endpoint: env.PRIVASEARCH_DISCOVERY_PROVIDER_URL, maxPerHour: integer('PRIVASEARCH_DISCOVERY_PROVIDER_MAX_PER_HOUR', env.PRIVASEARCH_DISCOVERY_PROVIDER_MAX_PER_HOUR, 20, 1, 3600), timeoutMs: integer('PRIVASEARCH_DISCOVERY_PROVIDER_TIMEOUT_MS', env.PRIVASEARCH_DISCOVERY_PROVIDER_TIMEOUT_MS, 5000, 500, 60000) };
+  } else if (env.PRIVASEARCH_DISCOVERY_PROVIDER_SEND_QUERIES === 'true') throw new ConfigError(['PRIVASEARCH_DISCOVERY_PROVIDER_URL'], 'PRIVASEARCH_DISCOVERY_PROVIDER_SEND_QUERIES is set but there is no PRIVASEARCH_DISCOVERY_PROVIDER_URL');
   const templates = (env.PRIVASEARCH_DISCOVERY_TEMPLATES ?? '').split(/\s+/).filter(Boolean);
   const ms = (name: string, fallback: number, min: number, max: number) => integer(name, env[name], fallback, min, max);
   const frontier: FrontierOptions = {
@@ -68,7 +84,7 @@ export function parseServiceConfig(env: Record<string, string | undefined>, seed
   if ((frontier.recrawlMinMs ?? 0) > (frontier.recrawlMaxMs ?? 0)) throw new ConfigError(['PRIVASEARCH_RECRAWL_MIN_MS', 'PRIVASEARCH_RECRAWL_MAX_MS'], 'PRIVASEARCH_RECRAWL_MIN_MS must not exceed PRIVASEARCH_RECRAWL_MAX_MS');
   return {
     dbPath: env.PRIVASEARCH_DB ?? './var/privasearch.sqlite', host, port: integer('PRIVASEARCH_PORT', env.PRIVASEARCH_PORT, 4020, 0, 65535), ...(apiToken ? { apiToken } : {}),
-    ...(privanet ? { privanet } : {}), concurrency: integer('PRIVASEARCH_CONCURRENCY', env.PRIVASEARCH_CONCURRENCY, 8, 1, 512), seeds, templates, frontier,
+    ...(privanet ? { privanet } : {}), concurrency: integer('PRIVASEARCH_CONCURRENCY', env.PRIVASEARCH_CONCURRENCY, 8, 1, 512), seeds, seedClasses, templates, frontier, sitemapTxt: bool('PRIVASEARCH_SITEMAP_TXT', env.PRIVASEARCH_SITEMAP_TXT, false), ...(provider ? { provider } : {}),
     demand: { enabled: bool('PRIVASEARCH_DEMAND', env.PRIVASEARCH_DEMAND, true), minStrong: ms('PRIVASEARCH_DEMAND_MIN_RESULTS', 3, 1, 50), cooldownMs: ms('PRIVASEARCH_DEMAND_COOLDOWN_MS', 30 * 60000, 1000, 86400000),
       maxCandidates: ms('PRIVASEARCH_DEMAND_MAX_CANDIDATES', 12, 1, 100), maxPendingDemand: ms('PRIVASEARCH_DEMAND_MAX_PENDING', 300, 1, 100000), maxQueriesPerHour: ms('PRIVASEARCH_DEMAND_MAX_PER_HOUR', 30, 1, 100000) },
     shutdownMs: ms('PRIVASEARCH_SHUTDOWN_MS', 15000, 0, 300000), progressMs: ms('PRIVASEARCH_PROGRESS_MS', 60000, 1000, 3600000),
@@ -86,6 +102,7 @@ function parsePolicy(env: Record<string, string | undefined>): FrontierOptions {
   set('maxPendingPerDomain', int('PRIVASEARCH_MAX_PENDING_PER_DOMAIN', undefined, 1, 10_000_000)); set('maxPendingPerFamily', int('PRIVASEARCH_MAX_PENDING_PER_FAMILY', undefined, 1, 10_000_000));
   set('maxPendingTotal', int('PRIVASEARCH_MAX_PENDING_TOTAL', undefined, 1, 100_000_000)); set('domainConcurrency', int('PRIVASEARCH_DOMAIN_CONCURRENCY', undefined, 1, 64));
   set('familyConcurrency', int('PRIVASEARCH_FAMILY_CONCURRENCY', undefined, 1, 256)); set('saturationPages', int('PRIVASEARCH_SATURATION_PAGES', undefined, 1, 10_000_000));
+  if (env.PRIVASEARCH_RECRAWL_SHARE) { const share = Number(env.PRIVASEARCH_RECRAWL_SHARE); if (!(share >= 0 && share <= 1)) throw new ConfigError(['PRIVASEARCH_RECRAWL_SHARE'], 'PRIVASEARCH_RECRAWL_SHARE must be from 0 to 1'); out.recrawlShare = share; }
   set('yieldHalfLifeMs', int('PRIVASEARCH_YIELD_HALF_LIFE_MS', undefined, 60000, 3650 * 86400000));
   set('maxInternalLinksPerPage', int('PRIVASEARCH_MAX_INTERNAL_LINKS', undefined, 0, 100)); set('maxExternalLinksPerPage', int('PRIVASEARCH_MAX_EXTERNAL_LINKS', undefined, 0, 100));
   set('maxSiblingLinksPerPage', int('PRIVASEARCH_MAX_SIBLING_LINKS', undefined, 0, 100)); set('externalBonus', int('PRIVASEARCH_EXTERNAL_BONUS', undefined, 0, 50)); set('relevanceBonus', int('PRIVASEARCH_RELEVANCE_BONUS', undefined, 0, 50));
