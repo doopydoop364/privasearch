@@ -140,10 +140,11 @@ File-backed SQLite, one process, this container (not a production host). N pendi
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 10,000 | 5,149 | 6.1 / 24 ms | 0.95 ms | 0.4 ms | 0.5 ms | 18 ms | 56 ms (7,580) | 4.6 MB |
 | 100,000 | 5,058 | 6.4 / 24 ms | 0.94 ms | 0.8 ms | 1.4 ms | 161 ms | 2.76 s (85,980) | 36.6 MB |
+| 1,000,000 | 8,355 | 6.5 / 35 ms | 0.96 ms | 1.7 ms | 3.5 ms | 721 ms | 61.6 s (463,980) | 196 MB |
 
 Lease time is flat from 10k to 100k; prune dry-run grows with the work it plans (a read-only plan, never blocking the service). The benchmark found two real problems, fixed in this branch (same harness, before and after): the planner used a full-table index for the candidate-domain check and for demand/recrawl lookups (3,000 pending URLs: lease p50 20 ms -> 1.2 ms, with `INDEXED BY`), and the domain URL pick sorted every pending row of a giant domain because of an `ORDER BY` tie-break the index could not serve (profile of 400 pick queries at 100k pending: 213 ms -> 20 ms in total). The 10k case also runs in the test suite with generous limits (`tests/scale.test.ts`), so a regression to a table scan fails CI.
 
-A 1,000,000-row run was started and had not finished when this document was written; no 1M number is claimed. Re-run with `node dist/tests/bench/scale.js 1000000`.
+The 1,000,000 row is a single run on this container. Lease, completion and status costs stay flat; the prune *plan* is the expensive operation (about a minute at 1M, read-only), so run it from cron or by hand off-peak, not on the request path.
 
 ## Not done (deferred, honestly)
 
