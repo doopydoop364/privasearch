@@ -10,7 +10,7 @@ import { DEMAND_PRIORITY, SEED_PRIORITY, discoveryPriority } from './policy.js';
  *       base       discoveryPriority(depth) = max(0, 50 - 6 * depth): shallow pages first
  *       external   +externalBonus when the link leaves the linking page's registrable domain (new domains are how a crawl widens)
  *       relevance  +relevanceBonus when the URL path shares a word with the linking page's title (cheap context relevance; no anchor text exists in web.fetch.v1)
- *       language   -20 when the URL carries a language hint outside the preferred languages and languageMode is 'deprioritize'
+ *       language   -20 when the URL carries a language hint outside the preferred languages (languageMode 'filter' refuses such URLs at admission instead)
  *       query      -6 when the URL has a query string (parameterised pages are more often views of the same content)
  *
  * LAYER 2 - domain weight, evaluated at lease time from counters (no per-URL work):

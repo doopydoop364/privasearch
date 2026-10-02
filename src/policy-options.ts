@@ -14,7 +14,10 @@ export interface CrawlPolicyOptions {
   yieldHalfLifeMs?: number;
   /** The share (percent, must total 100) of public leases that exploit the fairest-share order, explore young domains, or pick a pseudo-random domain. */
   explore?: ExplorePolicy;
-  /** Languages worth crawling ('*' = all). Page languages and URL language hints outside this set are filtered or de-prioritised, see languageMode. */
+  /**
+   * Languages worth crawling ('*' = all). A FETCHED page in another language is still indexed, but only its links to other domains are followed. A URL whose host or path
+   * hints at another language (de.example.org, /fr/) is de-prioritised (languageMode 'deprioritize', the default) or refused at admission (languageMode 'filter').
+   */
   preferredLanguages?: string[]; languageMode?: 'filter' | 'deprioritize';
   /** Per fetched page: how many same-domain links, other-domain links, and "same page in another language edition" links may enter the frontier. */
   maxInternalLinksPerPage?: number; maxExternalLinksPerPage?: number; maxSiblingLinksPerPage?: number;
@@ -30,7 +33,7 @@ export interface ResolvedCrawlPolicy {
 }
 export const DEFAULT_POLICY: ResolvedCrawlPolicy = {
   maxPendingPerDomain: 3000, maxPendingPerFamily: 6000, maxPendingTotal: 500000, domainConcurrency: 2, familyConcurrency: 4, saturationPages: 200, minWeight: 0.05, yieldHalfLifeMs: 7 * 86400000,
-  explore: { exploit: 70, explore: 20, wildcard: 10 }, preferredLanguages: ['en'], languageMode: 'filter',
+  explore: { exploit: 70, explore: 20, wildcard: 10 }, preferredLanguages: ['en'], languageMode: 'deprioritize',
   maxInternalLinksPerPage: 25, maxExternalLinksPerPage: 40, maxSiblingLinksPerPage: 2, externalBonus: 12, relevanceBonus: 6, trackingParams: [],
 };
 

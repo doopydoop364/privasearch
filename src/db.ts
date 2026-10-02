@@ -163,21 +163,27 @@ export function initSchema(db: DatabaseSync): void {
       db.exec('DELETE FROM docs_fts WHERE rowid NOT IN (SELECT MIN(rowid) FROM docs_fts GROUP BY url_key)');
       db.exec('INSERT OR IGNORE INTO docs_index (id, url_key) SELECT rowid, url_key FROM docs_fts');
     }
-    if (version < 4) { migrateV4(db); db.exec(TRIGGERS_V4); }
+    if (version < 4) migrateV4(db); // creates the v4 structures, backfills, installs the triggers and sets user_version=4, all in one transaction
     db.exec(`PRAGMA user_version=${SCHEMA_VERSION}`);
   }
 }
 
-/** One transaction: either every v4 structure and the backfill exist, or the database is exactly as it was (still version 3, still usable by 0.4.1). */
+/**
+ * One transaction: either every v4 structure, the backfill, the triggers and the version bump exist, or the database is exactly as it was (still version 3, still usable
+ * by 0.4.1). Also used to adopt rows with no domain (written by an older version after a rollback): those rows, and only those, get a domain and an inferred source.
+ */
 function migrateV4(db: DatabaseSync): void {
   inTransaction(db, () => {
     for (const [table, column, ddl] of COLUMNS_V4) if (!hasColumn(db, table, column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
     db.exec(TABLES_V4);
+    // source is INFERRED for rows that have none (written by an older version): demand queue -> demand, depth 0 -> seed, the rest discovered. Rows that already carry
+    // a domain were written by this version and keep their real source (redirect, sitemap, provider, ...).
+    db.exec(`UPDATE urls SET source = CASE WHEN queue='DEMAND' THEN 'demand' WHEN depth=0 THEN 'seed' ELSE 'discovered' END WHERE domain IS NULL`);
     // domain: one UPDATE per distinct host (urls_host is indexed), not per row.
     for (const { host } of db.prepare('SELECT DISTINCT host FROM urls WHERE domain IS NULL').all() as Array<{ host: string }>) db.prepare('UPDATE urls SET domain=? WHERE host=? AND domain IS NULL').run(registrableDomain(host), host);
-    // source is INFERRED for rows written by an older version (which stored none): demand queue -> demand, depth 0 -> seed, the rest discovered.
-    db.exec(`UPDATE urls SET source = CASE WHEN queue='DEMAND' THEN 'demand' WHEN depth=0 THEN 'seed' ELSE 'discovered' END`);
     rebuildCounters(db);
+    db.exec(TRIGGERS_V4);
+    db.exec('PRAGMA user_version=4');
   });
 }
 

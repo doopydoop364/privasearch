@@ -163,11 +163,10 @@ export class Crawler {
       if (link.nofollow) continue;
       const parsed = parseCrawlUrl(link.url, item.url, policy.trackingParams); if (!parsed.ok) continue;
       graph.push({ key: urlKey(parsed.url), url: parsed.url, host: parsed.host });
-      const domain = frontier.model.domainOf(parsed.host); let path = parsed.url; try { const u = new URL(parsed.url); path = u.pathname; } catch { /* keep the whole URL */ }
-      const here = (() => { try { return new URL(item.url).pathname; } catch { return ''; } })();
-      candidates.push({ url: parsed.url, domain, kind: domain !== srcDomain ? 'external' : parsed.host !== item.host && path === here ? 'sibling' : 'internal', relevant: pathShares(path, titleWords) });
+      const domain = frontier.model.domainOf(parsed.host); let path = parsed.url; try { path = new URL(parsed.url).pathname; } catch { /* keep the whole URL */ }
+      candidates.push({ url: parsed.url, domain, kind: domain !== srcDomain ? 'external' : parsed.host !== item.host ? 'sibling' : 'internal', relevant: pathShares(path, titleWords) });
     }
-    const foreignPage = policy.languageMode === 'filter' && !languagePreferred(page.language, policy.preferredLanguages);
+    const foreignPage = !languagePreferred(page.language, policy.preferredLanguages);
     for (const link of chooseLinks(candidates, policy, foreignPage)) {
       const added = frontier.add(link.url, { queue: 'PUBLIC', depth: item.depth + 1, source: 'discovered', external: link.kind === 'external', relevant: link.relevant }, now);
       if (added === 'ADDED') summary.discovered++; else if (added !== 'EXISTS') summary.trapped++;
@@ -187,8 +186,8 @@ export interface LinkCandidate { url: string; domain: string; kind: 'internal' |
  * Bounded, deterministic link fanout. A page may name up to 100 links (the contract), but a giant site's page names mostly its own navigation. The frontier gets:
  *   external   up to maxExternalLinksPerPage, one per distinct other domain first (document order), then more from the same domains: the way a crawl widens
  *   internal   up to maxInternalLinksPerPage, links whose path shares a word with the page title first, then document order
- *   sibling    up to maxSiblingLinksPerPage links to the same path on another host of the same domain (the same article in another language edition)
- * From a page in a language outside the preferred set (languageMode 'filter') only external links are followed: one foreign page must not open a whole foreign site.
+ *   sibling    up to maxSiblingLinksPerPage links to ANOTHER HOST of the same domain (language editions, docs./blog./shop. subdomains): a language switcher names dozens of them
+ * From a page in a language outside the preferred set (unless preferredLanguages is '*') only external links are followed: one foreign page must not open a whole foreign site.
  * Everything is a pure function of the page, so the same page always yields the same links.
  */
 export function chooseLinks(candidates: LinkCandidate[], policy: { maxInternalLinksPerPage: number; maxExternalLinksPerPage: number; maxSiblingLinksPerPage: number }, foreignPage: boolean): LinkCandidate[] {

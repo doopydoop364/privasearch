@@ -61,7 +61,15 @@ export class Frontier {
     this.policy = resolvePolicy(rest); this.model = domainModel ?? new DomainModel(families ?? {});
     this.o = { hostDelayMs: 2000, maxAttempts: 5, backoffBaseMs: 60000, maxBackoffMs: 6 * HOUR, recrawlMs: 7 * DAY, recrawlMinMs: 6 * HOUR, recrawlMaxMs: 60 * DAY, importantRecrawlMaxMs: 14 * DAY,
       goneRecheckMs: 30 * DAY, failedRecheckMs: 30 * DAY, staleLeaseMs: 300000, maxDepth: 8, maxUrlsPerHost: 2000, recrawlShare: 0.25, ...Object.fromEntries(Object.entries(rest).filter(([k, v]) => v !== undefined && !(k in this.policy))) };
-    initSchema(db);
+    initSchema(db); this.syncFamilies(families ?? {});
+  }
+  /** Makes the stored family of every domain match the configuration (a domain not listed is its own family), so adding or removing a group takes effect at the next start. */
+  private syncFamilies(groups: Record<string, string[]>): void {
+    this.transaction(() => {
+      const listed = new Map<string, string>(); for (const [family, domains] of Object.entries(groups)) for (const d of domains) listed.set(d.toLowerCase(), family);
+      this.db.prepare('UPDATE domains SET family = domain WHERE family <> domain').run();
+      for (const [domain, family] of listed) this.db.prepare('UPDATE domains SET family = ? WHERE domain = ?').run(family, domain);
+    });
   }
   private transaction<T>(work: () => T): T { return inTransaction(this.db, work); }
   /** Runs `work` (frontier and document changes on this database) as one unit: all of it or none of it. */
@@ -97,7 +105,7 @@ export class Frontier {
     const known = this.db.prepare('SELECT queue, priority FROM urls WHERE url_key=?').get(key) as { queue: Queue; priority: number } | undefined;
     const hint = urlLanguageHint(parsed.url); const hintAllowed = languagePreferred(hint, this.policy.preferredLanguages);
     // A caller that names neither a priority nor a source gets 0 (an operator-added URL); one that names a source gets that source's scored priority.
-    const priority = options.priority ?? (options.source === undefined ? 0 : priorityOf({ source, depth, external: options.external ?? false, relevant: options.relevant ?? false, languageHintAllowed: hintAllowed || this.policy.languageMode === 'filter', hasQuery: parsed.url.includes('?') }, this.policy).total);
+    const priority = options.priority ?? (options.source === undefined ? 0 : priorityOf({ source, depth, external: options.external ?? false, relevant: options.relevant ?? false, languageHintAllowed: hintAllowed, hasQuery: parsed.url.includes('?') }, this.policy).total);
     if (known) {
       // Demand promotes a URL already known as public work, so explicit user demand is never queued behind discovery; a better priority is kept.
       if (options.queue === 'DEMAND') {
@@ -187,34 +195,39 @@ export class Frontier {
   }
   private policy_recrawlShare(): number { return this.o.recrawlShare; }
 
-  /** Candidate domains for one slot, in the order the slot's class prefers. At most 64: a domain that cannot be served right now is charged and the next is tried. */
-  private candidates(kind: 'exploit' | 'explore' | 'wildcard', vmin: number): Array<DomainCounters & { domain: string; family: string; vtime: number }> {
-    const columns = 'domain, family, vtime, done, yield, yield_at, ref_domains';
+  /**
+   * Candidate domains for one slot, in the order the slot's class prefers: only domains that have a due URL on a host that is free right now (the readiness test is in
+   * the query, so a domain waiting out its politeness delay is neither considered nor charged). At most 64 per slot.
+   */
+  private candidates(kind: 'exploit' | 'explore' | 'wildcard', vmin: number, now: number): Array<DomainCounters & { domain: string; family: string; vtime: number }> {
+    const columns = 'd.domain, d.family, d.vtime, d.done, d.yield, d.yield_at, d.ref_domains';
+    const ready = `AND EXISTS (SELECT 1 FROM urls u LEFT JOIN hosts h ON h.host = u.host WHERE u.domain = d.domain AND u.state='PENDING' AND u.queue='PUBLIC' AND u.next_at <= ?
+      AND COALESCE(h.next_allowed_at,0) <= ? AND COALESCE(h.backoff_until,0) <= ? AND NOT EXISTS (SELECT 1 FROM urls x WHERE x.host = u.host AND x.state='IN_FLIGHT'))`;
     const room = this.policy.domainConcurrency;
-    if (kind === 'explore') return this.db.prepare(`SELECT ${columns} FROM domains WHERE pending > 0 AND done < 5 AND in_flight < ? ORDER BY vtime LIMIT 64`).all(room) as never;
+    if (kind === 'explore') return this.db.prepare(`SELECT ${columns} FROM domains d WHERE d.pending > 0 AND d.done < 5 AND d.in_flight < ? ${ready} ORDER BY d.vtime LIMIT 64`).all(room, now, now, now) as never;
     if (kind === 'wildcard') {
       const vmax = Number((this.db.prepare('SELECT COALESCE(MAX(vtime),0) AS v FROM domains WHERE pending > 0').get() as { v: number }).v);
       const at = vmin + ((this.wildcardTurn++ * 0.6180339887498949) % 1) * Math.max(0, vmax - vmin);
-      return this.db.prepare(`SELECT ${columns} FROM domains WHERE pending > 0 AND vtime >= ? AND in_flight < ? ORDER BY vtime LIMIT 64`).all(at, room) as never;
+      return this.db.prepare(`SELECT ${columns} FROM domains d WHERE d.pending > 0 AND d.vtime >= ? AND d.in_flight < ? ${ready} ORDER BY d.vtime LIMIT 64`).all(at, room, now, now, now) as never;
     }
-    return this.db.prepare(`SELECT ${columns} FROM domains WHERE pending > 0 AND in_flight < ? ORDER BY vtime LIMIT 64`).all(room) as never;
+    return this.db.prepare(`SELECT ${columns} FROM domains d WHERE d.pending > 0 AND d.in_flight < ? ${ready} ORDER BY d.vtime LIMIT 64`).all(room, now, now, now) as never;
   }
 
+  /** The next domain turn: the first candidate of the slot's class that has a leasable URL. Only a domain that is actually served is charged. */
   private pickFresh(now: number, hosts: Set<string>, vmin: number): UrlRow | undefined {
     const first = this.slotClass();
     const order: Array<'exploit' | 'explore' | 'wildcard'> = first === 'exploit' ? ['exploit'] : [first, 'exploit'];
     const pick = this.db.prepare(`SELECT u.* FROM urls u LEFT JOIN hosts h ON h.host = u.host WHERE u.domain = ? AND u.state='PENDING' AND u.queue='PUBLIC' AND u.next_at <= ?
       AND COALESCE(h.next_allowed_at,0) <= ? AND COALESCE(h.backoff_until,0) <= ? AND NOT EXISTS (SELECT 1 FROM urls x WHERE x.host = u.host AND x.state='IN_FLIGHT')
       ORDER BY u.priority DESC, u.next_at, u.url_key LIMIT 8`);
-    const charge = this.db.prepare('UPDATE domains SET vtime = ? WHERE domain = ?');
     for (const kind of order) {
-      for (const d of this.candidates(kind, vmin)) {
+      for (const d of this.candidates(kind, vmin, now)) {
         if (!this.hasRoom(d.domain, d.family)) continue;
-        // The best due URL of this domain whose host is not already used by this lease. A domain whose hosts are all busy or waiting is charged like a served one
-        // (it could not use its turn), which moves it behind its peers instead of letting it clog the head of the order.
-        const rows = pick.all(d.domain, now, now, now) as unknown as UrlRow[]; const row = rows.find(r => !hosts.has(r.host));
-        charge.run(Math.max(d.vtime, vmin) + 1 / domainWeight(d, now, this.policy).weight, d.domain);
-        if (row) return row;
+        // The best due URL of this domain whose host is not already used by this lease. The max() with the front of the schedule stops a domain that sat idle from banking credit.
+        const row = (pick.all(d.domain, now, now, now) as unknown as UrlRow[]).find(r => !hosts.has(r.host));
+        if (!row) continue;
+        this.db.prepare('UPDATE domains SET vtime = ? WHERE domain = ?').run(Math.max(d.vtime, vmin) + 1 / domainWeight(d, now, this.policy).weight, d.domain);
+        return row;
       }
     }
     return undefined;

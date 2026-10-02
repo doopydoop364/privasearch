@@ -5,8 +5,11 @@
  * web.fetch.v1 today (docs/crawl-quality.md, "Blocked by the contract").
  */
 const HOST_CODES = new Set(('aa ab af ak am an ar as av ay az ba be bg bh bi bm bn bo br bs ca ce ch co cr cs cu cv cy da de dv dz ee el en eo es et eu fa ff fi fj fo fr fy ga gd gl gn gu gv ha he hi ho hr ht hu hy hz ia id ie ig ii ik io is it iu ja jv ka kg ki kj kk kl km kn ko kr ks ku kv kw ky la lb lg li ln lo lt lu lv mg mh mi mk ml mn mr ms mt my na nb nd ne ng nl nn no nr nv ny oc oj om or os pa pi pl ps pt qu rm rn ro ru rw sa sc sd se sg si sk sl sm sn so sq sr ss st su sv sw ta te tg th ti tk tl tn to tr ts tt tw ty ug uk ur uz ve vi vo wa wo xh yi yo za zh zu simple').split(' '));
-// Host labels that are far more often a service name (my.example.com, go.example.com) than a language edition.
-const HOST_AMBIGUOUS = new Set(['my', 'me', 'to', 'go', 'do', 'as', 'so', 'or', 'in', 'us', 'am', 'be', 'hi', 'he', 'is', 'la', 'na', 'on', 'se', 'st', 'wa', 'ha']);
+// Host labels that are far more often a service name (my.example.com, go.example.com) or a COUNTRY (uk.reuters.com) than a language edition. Language editions of
+// big encyclopedias that collide with a country code (uk, ca, ar, pl, ro, hu, tr, ru, se, fi) are therefore not recognised by hint: their pages are still judged by their own <html lang> after the fetch.
+const HOST_AMBIGUOUS = new Set(['my', 'me', 'to', 'go', 'do', 'as', 'so', 'or', 'in', 'us', 'am', 'be', 'hi', 'he', 'is', 'la', 'na', 'on', 'se', 'st', 'wa', 'ha',
+  // country codes that are not languages (uk.reuters.com, ca.example.com, ch., tw., sg., kr., ie., lu., za., cs.) and so never a hint:
+  'uk', 'ca', 'ch', 'tw', 'sg', 'kr', 'ie', 'lu', 'za', 'cs', 'au', 'nz', 'in', 'us', 'eu', 'cn', 'br', 'mx', 'ar', 'sa', 'ae', 'il', 'gr', 'at', 'be', 'dk', 'se', 'fi', 'pl', 'ro', 'cz', 'hu', 'tr', 'ru', 'ua', 'jp', 'vn', 'ph', 'my', 'id', 'th', 'hk', 'pk', 'ng', 'ke', 'eg']);
 // Two-letter segments that are also common English words or path words: never a language hint when found in a PATH.
 const PATH_AMBIGUOUS = new Set(['is', 'it', 'no', 'to', 'my', 'me', 'be', 'am', 'as', 'so', 'or', 'id', 'in', 'us', 'he', 'hi', 'do', 'go', 'ha', 'la', 'na', 'on', 'se', 'st', 'ti', 'ty', 'wa', 'ye', 'nd', 'ng', 'li', 'lo', 'mi', 'ne', 'oc', 'os', 'pa', 'pi', 'ps', 'qu', 're', 'ss', 'ts', 'tt', 'tw', 'ug', 'za']);
 
