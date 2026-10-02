@@ -196,7 +196,7 @@ export class Frontier {
     return this.transaction(() => {
       const want = Math.max(1, limit); const hosts = new Set<string>(); const out: Leased[] = [];
       const due = `u.next_at <= ? AND COALESCE(h.next_allowed_at,0) <= ? AND COALESCE(h.backoff_until,0) <= ? AND NOT EXISTS (SELECT 1 FROM urls x WHERE x.host = u.host AND x.state='IN_FLIGHT')`;
-      const select = (where: string, order: string, cap: number) => this.db.prepare(`SELECT u.* FROM urls u LEFT JOIN hosts h ON h.host = u.host WHERE ${where} AND ${due} ORDER BY ${order} LIMIT ?`)
+      const select = (where: string, order: string, cap: number, index = 'urls_due') => this.db.prepare(`SELECT u.* FROM urls u INDEXED BY ${index} LEFT JOIN hosts h ON h.host = u.host WHERE ${where} AND ${due} ORDER BY ${order} LIMIT ?`)
         .all(now, now, now, Math.max(1, cap) * 8) as unknown as UrlRow[];
       const claim = (row: UrlRow): void => {
         hosts.add(row.host); this.db.prepare(`UPDATE urls SET state='IN_FLIGHT', leased_at=? WHERE url_key=?`).run(now, row.url_key);
@@ -216,10 +216,11 @@ export class Frontier {
           claim(row); taken++;
         }
       };
-      take(select(`u.state='PENDING' AND u.queue='DEMAND'`, 'u.priority DESC, u.next_at, u.url_key', want), want);
+      take(select(`u.state='PENDING' AND u.queue='DEMAND'`, 'u.priority DESC, u.next_at, u.url_key', want, 'urls_pending_demand'), want);
       const rest = want - out.length; if (rest <= 0) return out;
       const recrawlQuota = rest >= 2 ? Math.ceil(rest * this.policy_recrawlShare()) : (this.singleSlotTurn++ % 4 === 3 ? 1 : 0);
-      const recrawl = () => select(`u.state IN ('DONE','FAILED')`, `CASE u.state WHEN 'DONE' THEN 0 ELSE 1 END, u.next_at, u.url_key`, rest);
+      // Two index-ordered scans (done pages first, then failed ones): no sort over every due row.
+      const recrawl = () => { const done = select(`u.state='DONE'`, 'u.next_at, u.url_key', rest); return done.length >= rest * 8 ? done : [...done, ...select(`u.state='FAILED'`, 'u.next_at, u.url_key', rest)]; };
       take(recrawl(), recrawlQuota, true);
       const vmin = Number((this.db.prepare('SELECT COALESCE(MIN(vtime),0) AS v FROM domains WHERE pending > 0').get() as { v: number }).v);
       while (out.length < want) { const row = this.pickFresh(now, hosts, vmin); if (!row) break; claim(row); }
@@ -235,7 +236,7 @@ export class Frontier {
    */
   private candidates(kind: 'exploit' | 'explore' | 'wildcard', vmin: number, now: number): Array<DomainCounters & { domain: string; family: string; vtime: number }> {
     const columns = 'd.domain, d.family, d.vtime, d.done, d.yield, d.yield_at, d.ref_domains';
-    const ready = `AND EXISTS (SELECT 1 FROM urls u LEFT JOIN hosts h ON h.host = u.host WHERE u.domain = d.domain AND u.state='PENDING' AND u.queue='PUBLIC' AND u.next_at <= ?
+    const ready = `AND EXISTS (SELECT 1 FROM urls u INDEXED BY urls_domain_pending LEFT JOIN hosts h ON h.host = u.host WHERE u.domain = d.domain AND u.state='PENDING' AND u.queue='PUBLIC' AND u.next_at <= ?
       AND COALESCE(h.next_allowed_at,0) <= ? AND COALESCE(h.backoff_until,0) <= ? AND NOT EXISTS (SELECT 1 FROM urls x WHERE x.host = u.host AND x.state='IN_FLIGHT'))`;
     const room = this.policy.domainConcurrency;
     if (kind === 'explore') return this.db.prepare(`SELECT ${columns} FROM domains d WHERE d.pending > 0 AND d.done < 5 AND d.in_flight < ? ${ready} ORDER BY d.vtime LIMIT 64`).all(room, now, now, now) as never;
@@ -251,9 +252,9 @@ export class Frontier {
   private pickFresh(now: number, hosts: Set<string>, vmin: number): UrlRow | undefined {
     const first = this.slotClass();
     const order: Array<'exploit' | 'explore' | 'wildcard'> = first === 'exploit' ? ['exploit'] : [first, 'exploit'];
-    const pick = this.db.prepare(`SELECT u.* FROM urls u LEFT JOIN hosts h ON h.host = u.host WHERE u.domain = ? AND u.state='PENDING' AND u.queue='PUBLIC' AND u.next_at <= ?
+    const pick = this.db.prepare(`SELECT u.* FROM urls u INDEXED BY urls_domain_pending LEFT JOIN hosts h ON h.host = u.host WHERE u.domain = ? AND u.state='PENDING' AND u.queue='PUBLIC' AND u.next_at <= ?
       AND COALESCE(h.next_allowed_at,0) <= ? AND COALESCE(h.backoff_until,0) <= ? AND NOT EXISTS (SELECT 1 FROM urls x WHERE x.host = u.host AND x.state='IN_FLIGHT')
-      ORDER BY u.priority DESC, u.next_at, u.url_key LIMIT 8`);
+      ORDER BY u.priority DESC, u.next_at LIMIT 8`); // ties fall to insertion order (rowid), which the index already provides: no sort over the whole domain
     for (const kind of order) {
       for (const d of this.candidates(kind, vmin, now)) {
         if (!this.hasRoom(d.domain, d.family)) continue;

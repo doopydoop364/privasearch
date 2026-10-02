@@ -20,6 +20,8 @@ A persistent SQLite table of URLs: state (`PENDING`, `IN_FLIGHT`, `DONE`, `BLOCK
 
 ## Background crawling
 
+> Since the crawl-quality work (unreleased, schema v4) the frontier schedules **across registrable domains** with weighted fair queueing, so one giant site cannot take the whole crawl. See [crawl-quality.md](crawl-quality.md) for the algorithm, budgets, language policy and tools; the description below is the per-host mechanics, which still apply.
+
 The crawler runs whenever the service runs, with or without searches:
 
 1. **Seeds** (`PRIVASEARCH_SEEDS`, one URL per line) are added at start at priority 60 (re-adding is a no-op).
@@ -98,5 +100,5 @@ One SQLite file (`PRIVASEARCH_DB`): `documents` (normalised URL, final and canon
 - Default ports only: a site on a non-standard port is not crawled.
 - Discovery for an **empty** index depends on the templates and seeds you configure; without them a first search finds nothing to crawl (`no_candidates`).
 - `web.fetch.v1` returns at most 10 KiB of text and 100 links per page, and no anchor text, so the index holds the start of long pages only.
-- No sitemaps, no JavaScript rendering, no per-site rules beyond robots.txt, no language-specific analysis.
+- No XML sitemaps, feeds, `hreflang` or anchor text (the `web.fetch.v1` contract does not carry them; see [crawl-quality.md](crawl-quality.md#blocked-by-the-webfetchv1-contract)); only an opt-in `/sitemap.txt` probe. No JavaScript rendering, no per-site rules beyond robots.txt, no language-specific analysis beyond the URL hint.
 - No trust model for third-party nodes: results from nodes you do not control are validated for shape and consistency only, which is why untrusted nodes are a later roadmap item.
