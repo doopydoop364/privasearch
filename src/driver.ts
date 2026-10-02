@@ -5,7 +5,8 @@ import { FetchResultSchema } from './privanet/contract.js';
 import type { FetchResult } from './privanet/contract.js';
 import { TransportError } from './privanet/transport.js';
 import type { FetchTransport } from './privanet/transport.js';
-import { discoveryPriority } from './policy.js';
+import { languagePreferred, looksLikeSoft404, looksThin } from './language.js';
+import { pathShares, words } from './scoring.js';
 import { idempotencyKeyFor, parseCrawlUrl, urlKey } from './url.js';
 
 export interface DriverOptions {
@@ -16,6 +17,8 @@ export interface DriverOptions {
   infrastructureRetryMs?: number; infrastructureBackoffBaseMs?: number;
   /** Aborting this gives up on every submitted job still waiting for its result (shutdown past its deadline); each URL is released and resubmitted under the same key later. */
   hardStop?: AbortSignal;
+  /** Opt-in: once a host has shown three useful pages, ask for its /sitemap.txt once and admit up to 100 same-domain URLs it lists (plain-text sitemaps only: web.fetch.v1 returns no XML). */
+  sitemapTxt?: boolean;
 }
 export interface PassSummary {
   submitted: number; outcomes: Partial<Record<FetchResult['outcome'], number>>;
@@ -139,33 +142,81 @@ export class Crawler {
     return undefined;
   }
 
+  /** One probe per host, ever (the row itself is the memory): after three useful pages of the host's domain, ask for /sitemap.txt. */
+  private maybeProbeSitemap(item: Leased, domain: string, now: number): void {
+    const useful = this.o.frontier.domainUseful(domain); if (useful < 3) return;
+    let origin: string; try { origin = new URL(item.url).origin; } catch { return; }
+    this.o.frontier.add(`${origin}/sitemap.txt`, { queue: 'PUBLIC', source: 'sitemap', depth: Math.min(item.depth, 1), priority: 55 }, now);
+  }
+  private ingestSitemap(item: Leased, text: string, summary: PassSummary, now: number): void {
+    const frontier = this.o.frontier; const home = frontier.model.domainOf(item.host); let taken = 0;
+    for (const line of text.split(/\r?\n/)) {
+      const raw = line.trim(); if (!/^https?:\/\//i.test(raw)) continue;
+      const parsed = parseCrawlUrl(raw, undefined, frontier.policy.trackingParams); if (!parsed.ok || frontier.model.domainOf(parsed.host) !== home) continue; // a sitemap may only name its own site
+      if (++taken > 100) break; // bounded: web.fetch.v1 returns at most 10 KiB of text, and a site must not fill the frontier through one file
+      const added = frontier.add(parsed.url, { queue: 'PUBLIC', source: 'sitemap', depth: 1 }, now);
+      if (added === 'ADDED') summary.discovered++; else if (added !== 'EXISTS') summary.trapped++;
+    }
+  }
+
   private ingest(item: Leased, result: FetchResult, summary: PassSummary): void {
     const page = result.page; if (!page) return;
-    let stored: { duplicateOf?: string; changed: boolean } | undefined;
+    const frontier = this.o.frontier; const policy = frontier.policy; const now = this.clock();
+    if (item.source === 'sitemap') { this.ingestSitemap(item, page.text ?? '', summary, now); return; } // a sitemap is a list of names, not a page: never indexed
+    let stored: { duplicateOf?: string; changed: boolean } | undefined; let kind: 'useful' | 'duplicate' | 'low_value' | undefined;
+    // A short "not found" page served with HTTP 200, or a page with almost nothing on it: kept (down-ranked, never deleted) and counted against its domain's yield.
+    const lowValue = looksLikeSoft404(page.title ?? '', page.text ?? '', page.links.length) || looksThin(page.text ?? '', page.links.length);
     if (result.indexing?.noindex) { this.o.documents.remove(item.urlKey); } // the site asked not to be indexed: drop anything held, and keep its links out of the graph
     else {
       stored = this.o.documents.upsert({
         urlKey: item.urlKey, url: item.url, finalUrl: result.finalUrl ?? item.url, title: page.title ?? '', description: page.description ?? '',
-        canonicalUrl: page.canonicalUrl ?? null, language: page.language ?? null, text: page.text ?? '', contentSha256: result.contentSha256 ?? '', fetchedAt: result.fetchedAtMs, httpStatus: result.httpStatus ?? 200 });
+        canonicalUrl: page.canonicalUrl ?? null, language: page.language ?? null, text: page.text ?? '', contentSha256: result.contentSha256 ?? '', fetchedAt: result.fetchedAtMs, httpStatus: result.httpStatus ?? 200, lowValue });
       if (stored.duplicateOf) summary.duplicates++; else summary.indexed++;
       if (stored.changed && !stored.duplicateOf) summary.changed++;
+      kind = stored.duplicateOf ? 'duplicate' : lowValue ? 'low_value' : 'useful'; frontier.recordPage(item.urlKey, kind, now);
     }
     if (result.indexing?.nofollow) { if (stored) this.o.documents.setLinks(item.urlKey, item.host, []); return; }
-    // Discovered links become public-queue work, shallow pages first: user demand only ever comes from an explicit request.
-    const graph: Array<{ key: string; url: string; host: string }> = [];
+    // Discovered links become public-queue work. Which links, and how many: see `chooseLinks`. Priorities are computed by the frontier from the link's facts.
+    const graph: Array<{ key: string; url: string; host: string }> = []; const candidates: LinkCandidate[] = [];
+    const srcDomain = frontier.model.domainOf(item.host); const titleWords = words(page.title ?? '');
     for (const link of page.links) {
       if (link.nofollow) continue;
-      const parsed = parseCrawlUrl(link.url, item.url); if (!parsed.ok) continue;
+      const parsed = parseCrawlUrl(link.url, item.url, policy.trackingParams); if (!parsed.ok) continue;
       graph.push({ key: urlKey(parsed.url), url: parsed.url, host: parsed.host });
-      // The frontier enforces the maximum crawl depth, the crawl-trap guard and the per-host budget.
-      const added = this.o.frontier.add(parsed.url, { queue: 'PUBLIC', depth: item.depth + 1, priority: discoveryPriority(item.depth + 1), source: 'discovered' }, this.clock());
-      if (added === 'ADDED') summary.discovered++; else if (added === 'HOST_BUDGET' || added.startsWith('TRAP:')) summary.trapped++;
+      const domain = frontier.model.domainOf(parsed.host); let path = parsed.url; try { path = new URL(parsed.url).pathname; } catch { /* keep the whole URL */ }
+      candidates.push({ url: parsed.url, domain, kind: domain !== srcDomain ? 'external' : parsed.host !== item.host ? 'sibling' : 'internal', relevant: pathShares(path, titleWords) });
     }
+    const foreignPage = !languagePreferred(page.language, policy.preferredLanguages);
+    for (const link of chooseLinks(candidates, policy, foreignPage)) {
+      const added = frontier.add(link.url, { queue: 'PUBLIC', depth: item.depth + 1, source: 'discovered', external: link.kind === 'external', relevant: link.relevant }, now);
+      if (added === 'ADDED') summary.discovered++; else if (added !== 'EXISTS') summary.trapped++;
+    }
+    if (kind === 'useful' && this.o.sitemapTxt) this.maybeProbeSitemap(item, srcDomain, now);
+    if (kind === 'useful') for (const domain of new Set(candidates.filter(c => c.kind === 'external').map(c => c.domain))) frontier.noteDomainLink(srcDomain, domain); // independent referring domains, from real pages only
     if (stored && !stored.duplicateOf) this.o.documents.setLinks(item.urlKey, item.host, graph);
     // A page that names another page of the same site as its canonical version makes that page worth fetching (never another site: a page cannot send the crawler elsewhere).
     if (stored && !stored.duplicateOf && page.canonicalUrl) {
-      const canonical = parseCrawlUrl(page.canonicalUrl, result.finalUrl ?? item.url);
-      if (canonical.ok && canonical.host === item.host) this.o.frontier.add(canonical.url, { queue: 'PUBLIC', depth: item.depth, priority: discoveryPriority(item.depth), source: 'discovered' }, this.clock());
+      const canonical = parseCrawlUrl(page.canonicalUrl, result.finalUrl ?? item.url, policy.trackingParams);
+      if (canonical.ok && canonical.host === item.host) frontier.add(canonical.url, { queue: 'PUBLIC', depth: item.depth, source: 'discovered' }, now);
     }
   }
+}
+
+export interface LinkCandidate { url: string; domain: string; kind: 'internal' | 'external' | 'sibling'; relevant: boolean }
+/**
+ * Bounded, deterministic link fanout. A page may name up to 100 links (the contract), but a giant site's page names mostly its own navigation. The frontier gets:
+ *   external   up to maxExternalLinksPerPage, one per distinct other domain first (document order), then more from the same domains: the way a crawl widens
+ *   internal   up to maxInternalLinksPerPage, links whose path shares a word with the page title first, then document order
+ *   sibling    up to maxSiblingLinksPerPage links to ANOTHER HOST of the same domain (language editions, docs./blog./shop. subdomains): a language switcher names dozens of them
+ * From a page in a language outside the preferred set (unless preferredLanguages is '*') only external links are followed: one foreign page must not open a whole foreign site.
+ * Everything is a pure function of the page, so the same page always yields the same links.
+ */
+export function chooseLinks(candidates: LinkCandidate[], policy: { maxInternalLinksPerPage: number; maxExternalLinksPerPage: number; maxSiblingLinksPerPage: number }, foreignPage: boolean): LinkCandidate[] {
+  const seen = new Set<string>(); const unique = candidates.filter(c => !seen.has(c.url) && seen.add(c.url));
+  const external = unique.filter(c => c.kind === 'external'); const firstPerDomain = new Set<string>(); const spread: LinkCandidate[] = []; const more: LinkCandidate[] = [];
+  for (const c of external) { if (firstPerDomain.has(c.domain)) more.push(c); else { firstPerDomain.add(c.domain); spread.push(c); } }
+  const chosen = [...spread, ...more].slice(0, policy.maxExternalLinksPerPage);
+  if (foreignPage) return chosen;
+  const internal = unique.filter(c => c.kind === 'internal'); const ranked = [...internal.filter(c => c.relevant), ...internal.filter(c => !c.relevant)];
+  return [...chosen, ...ranked.slice(0, policy.maxInternalLinksPerPage), ...unique.filter(c => c.kind === 'sibling').slice(0, policy.maxSiblingLinksPerPage)];
 }

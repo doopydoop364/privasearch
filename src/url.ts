@@ -20,7 +20,7 @@ function normalisePercent(text: string): string {
   });
 }
 
-export function parseCrawlUrl(raw: string, base?: string): Parsed {
+export function parseCrawlUrl(raw: string, base?: string, extraTracking: readonly string[] = []): Parsed {
   if (raw.length > MAX_URL * 2) return { ok: false, reason: 'TOO_LONG' };
   // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f\\]/.test(raw.trim())) return { ok: false, reason: 'CONTROL_CHARS' };
@@ -37,7 +37,7 @@ export function parseCrawlUrl(raw: string, base?: string): Parsed {
   if (url.port !== '') return { ok: false, reason: 'PORT' }; // WHATWG URL empties the default port, so any explicit port is non-default
   url.hash = '';
   url.hostname = host;
-  const kept = [...url.searchParams.entries()].filter(([key]) => !TRACKING.test(key));
+  const kept = [...url.searchParams.entries()].filter(([key]) => !TRACKING.test(key) && !extraTracking.includes(key.toLowerCase()));
   if (kept.length !== [...url.searchParams.keys()].length) url.search = kept.length ? `?${new URLSearchParams(kept).toString()}` : '';
   const path = normalisePercent(url.pathname === '' ? '/' : url.pathname);
   const search = url.search === '' ? '' : normalisePercent(url.search);

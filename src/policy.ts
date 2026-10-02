@@ -4,7 +4,7 @@
  * a seed, a redirect target or a URL an operator asked for explicitly is never judged here. They are heuristics, so they can refuse a
  * legitimate URL (see docs/crawling.md, limitations); the per-host budget in the frontier is the backstop for anything they miss.
  */
-export type TrapReason = 'TOO_MANY_SEGMENTS' | 'REPEATING_SEGMENTS' | 'TOO_MANY_PARAMS' | 'LONG_QUERY' | 'SESSION_OR_FILTER_PARAM' | 'CALENDAR' | 'DEEP_PAGINATION';
+export type TrapReason = 'TOO_MANY_SEGMENTS' | 'REPEATING_SEGMENTS' | 'TOO_MANY_PARAMS' | 'LONG_QUERY' | 'SESSION_OR_FILTER_PARAM' | 'CALENDAR' | 'DEEP_PAGINATION' | 'LONG_SEGMENT' | 'PATH_SESSION' | 'REPEATED_PARAM_VALUE';
 
 const MAX_SEGMENTS = 10;
 const MAX_PARAMS = 5;
@@ -21,7 +21,10 @@ export function crawlTrap(url: string): TrapReason | undefined {
   if (segments.length > MAX_SEGMENTS) return 'TOO_MANY_SEGMENTS';
   const counts = new Map<string, number>();
   for (const segment of segments) { const n = (counts.get(segment) ?? 0) + 1; if (n >= 3) return 'REPEATING_SEGMENTS'; counts.set(segment, n); }
+  if (segments.some(segment => segment.length > 120)) return 'LONG_SEGMENT'; // generated tokens and encoded state, not a page name
+  if (/;(jsessionid|sessionid|sid|phpsessid)=/i.test(parsed.pathname)) return 'PATH_SESSION'; // session id carried in the path
   const keys = [...parsed.searchParams.keys()];
+  const values = [...parsed.searchParams.values()].filter(value => value.length > 0); if (values.length >= 3 && new Set(values).size === 1) return 'REPEATED_PARAM_VALUE'; // ?a=x&b=x&c=x: a loop that appends parameters
   if (keys.length > MAX_PARAMS) return 'TOO_MANY_PARAMS';
   if (parsed.search.length > MAX_QUERY) return 'LONG_QUERY';
   if (keys.some(key => SESSION_OR_FILTER.test(key))) return 'SESSION_OR_FILTER_PARAM';

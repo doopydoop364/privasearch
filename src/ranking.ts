@@ -82,7 +82,7 @@ export class Searcher {
       const freshness = Math.exp(-Math.max(0, now - candidate.lastChangedAt) / DAY / 180);
       const links = inbound.get(candidate.urlKey) ?? 0; const authority = Math.min(1, Math.log2(1 + links) / 4);
       const base = 0.45 * relevance + 0.20 * titleCov + 0.10 * urlCov + 0.05 * descCov + 0.05 * (phraseMatch ? 1 : 0) + 0.15 * coverage;
-      const score = round(100 * base * coverage * coverage * (1 + 0.10 * freshness) * (1 + 0.15 * authority));
+      const score = round(100 * base * coverage * coverage * (1 + 0.10 * freshness) * (1 + 0.15 * authority) * (candidate.lowValue ? 0.3 : 1));
       let title = candidate.title.trim(); if (title === '') title = `${host}${path === '/' ? '' : path}`;
       scored.push({
         group: candidate.canonicalKey ?? variantKey(candidate.url), https: candidate.url.startsWith('https:'),

@@ -49,7 +49,7 @@ export function createSearchServer(arg: DocumentStore | ServerDeps): Server {
     if (url.pathname === '/status') {
       const now = clock();
       send(200, { apiVersion: API_VERSION, uptimeSec: Math.round((now - started) / 1000), crawling: deps.crawling?.() ?? false, documents: { ...deps.documents.count(), links: deps.documents.linkCount() },
-        ...(deps.frontier ? { frontier: { ...deps.frontier.stats(), ...deps.frontier.detail(now) } } : {}), ...(deps.planner ? { demand: deps.planner.stats() } : {}) });
+        ...(deps.frontier ? { frontier: { ...deps.frontier.stats(), ...deps.frontier.detail(now), concentration: deps.frontier.concentration(now), admission: deps.frontier.admission } } : {}), ...(deps.planner ? { demand: deps.planner.stats() } : {}) });
       return;
     }
     const q = url.searchParams.get('q') ?? '';

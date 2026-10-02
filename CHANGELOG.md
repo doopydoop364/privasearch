@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+Crawl quality: a frontier dominated by one giant site (Wikipedia and its language editions, about 18,000 pending URLs) now shares the crawl with independent sites. Schema version 4; **take a backup before first start** (a v4 database is not readable by 0.4.1). Core is unchanged. Details, formulas and measurements: [docs/crawl-quality.md](docs/crawl-quality.md).
+
+### Added
+- **Registrable-domain model** (Public Suffix List via `tldts`, pinned) with an optional operator-defined family (`PRIVASEARCH_DOMAIN_FAMILIES`).
+- **Weighted fair scheduling across domains** (saturation, yield, authority), a 70/20/10 exploit/explore/wildcard split, domain and family concurrency caps, recrawl share spread across domains.
+- **Admission control** with per-reason counters: pending budgets per domain, family and total; language filter; extra traps (long segments, path sessions, repeated parameter values); tracking-parameter stripping.
+- **Link fanout**: other domains first, title-relevant internal links, at most 2 sibling-host links.
+- **Soft-404 and thin-page detection** (down-ranked, not deleted) and domain yield.
+- **`frontier-cli`** (`npm run frontier`): analyze, explain, domain, seeds, prune (dry-run or apply), backup (`VACUUM INTO`). `/status` shows concentration and admission counters.
+- **Optional discovery**: a query provider (off; sends the query to a third party only with `PRIVASEARCH_DISCOVERY_PROVIDER_SEND_QUERIES=true`) and `/sitemap.txt` (off; `PRIVASEARCH_SITEMAP_TXT=true`), both fetched through `web.fetch.v1`.
+- Seed classes (`URL class=name`), URL-shaped queries as direct demand.
+- Benchmarks: `tests/bench/scale.ts`; synthetic-web simulator `tests/sim`.
+
+### Changed
+- Counters (`/status`, `/health`, scheduling) are O(1), maintained by triggers in the same transaction.
+- Lease cost no longer grows with a giant domain's backlog (measured: lease of 8, p50 6.1 ms at 10,000 and 6.4 ms at 100,000 pending URLs; at 3,000 pending URLs the index fix took the p50 from 20 ms to 1.2 ms).
+- On the synthetic web the wiki's share of fetches falls from 83-96 % to 22-30 %, and the first independent site is fetched at fetch 2-3 instead of 17-21.
+
+### Not done
+- XML sitemaps, RSS/Atom, `hreflang`, anchor text and robots `Sitemap:` lines are blocked by the `web.fetch.v1` contract (needs an additive Core change). Near-duplicate detection and boilerplate reduction are not implemented. No live production database was analysed or modified.
+
 ## [0.4.1] - 2026-10-01
 
 Hardening and performance fixes found by an audit of 0.4.0; no API, configuration or protocol change. A 0.4.0 database is migrated in place on first start (schema version 3); take a backup first, and do not run 0.4.0 against it afterwards.

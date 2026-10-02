@@ -7,6 +7,7 @@ import { Crawler } from './driver.js';
 import { DocumentStore } from './documents.js';
 import { Frontier } from './frontier.js';
 import { SEED_PRIORITY } from './policy.js';
+import { HttpDiscoveryProvider } from './provider.js';
 import { PrivaNetTransport } from './privanet/privanet-transport.js';
 import type { FetchTransport } from './privanet/transport.js';
 import { Searcher } from './ranking.js';
@@ -58,17 +59,20 @@ export async function startService(config: ServiceConfig, deps: ServiceDeps = {}
 
   // Nothing can still be in flight in a process that just started: take back the leases the previous process held.
   const reclaimed = frontier.requeueAll();
+  if (config.provider) log({ event: 'service.provider_enabled', maxPerHour: config.provider.maxPerHour }); // the endpoint is not logged: it can embed a path secret
   let seedsAdded = 0; let seedsRejected = 0;
-  for (const seed of config.seeds) { const result = frontier.add(seed, { queue: 'PUBLIC', priority: SEED_PRIORITY, source: 'seed' }, clock()); if (result === 'ADDED') seedsAdded++; else if (result !== 'EXISTS') seedsRejected++; }
+  for (const seed of config.seeds) { const result = frontier.add(seed, { queue: 'PUBLIC', priority: SEED_PRIORITY, source: 'seed' }, clock()); if (result === 'ADDED') seedsAdded++; else if (result !== 'EXISTS') seedsRejected++; const cls = config.seedClasses?.[seed]; if (cls) frontier.markSeedClass(seed, cls); }
 
   const planner = transport && config.demand.enabled
     ? new DemandPlanner(db, frontier, documents, { clock, templates: config.templates, minStrong: config.demand.minStrong, cooldownMs: config.demand.cooldownMs, maxCandidates: config.demand.maxCandidates,
-      maxPendingDemand: config.demand.maxPendingDemand, maxQueriesPerHour: config.demand.maxQueriesPerHour }) : undefined;
+      maxPendingDemand: config.demand.maxPendingDemand, maxQueriesPerHour: config.demand.maxQueriesPerHour,
+      ...(config.provider ? { provider: new HttpDiscoveryProvider({ endpoint: config.provider.endpoint, timeoutMs: config.provider.timeoutMs }), providerMaxPerHour: config.provider.maxPerHour,
+        onProvider: outcome => log({ event: 'demand.provider', ...outcome }) } : {}) }) : undefined; // the log never carries the query, the endpoint or the reason
   // The query ledger holds one row per distinct search; forget old ones at start and then once a day, so it cannot grow without bound.
   const prune = () => { try { const removed = planner?.prune() ?? 0; if (removed > 0) log({ event: 'service.ledger_pruned', removed }); } catch { log({ event: 'service.ledger_prune_failed' }); } };
   prune(); const pruning = setInterval(prune, 24 * 3600000); pruning.unref();
   const hardStop = new AbortController(); const softStop = new AbortController();
-  const crawler = transport ? new Crawler({ frontier, documents, transport, clock, batch: config.concurrency, hardStop: hardStop.signal }) : undefined;
+  const crawler = transport ? new Crawler({ frontier, documents, transport, clock, batch: config.concurrency, hardStop: hardStop.signal, ...(config.sitemapTxt ? { sitemapTxt: true } : {}) }) : undefined;
 
   let crawling = false;
   const server: Server = createSearchServer({ documents, searcher, frontier, ...(planner ? { planner } : {}), ...(config.apiToken ? { apiToken: config.apiToken } : {}), ...(version ? { version } : {}), clock, crawling: () => crawling });
@@ -87,7 +91,7 @@ export async function startService(config: ServiceConfig, deps: ServiceDeps = {}
       crawling = false;
     })();
   }
-  const progress = setInterval(() => log({ event: 'service.progress', frontier: { ...frontier.stats(), ...frontier.detail(clock()) }, documents: documents.count(), links: documents.linkCount(), ...(planner ? { demand: planner.stats() } : {}) }), config.progressMs);
+  const progress = setInterval(() => log({ event: 'service.progress', frontier: { ...frontier.stats(), ...frontier.detail(clock()), concentration: logConcentration(frontier, clock()), admission: frontier.admission }, documents: documents.count(), links: documents.linkCount(), ...(planner ? { demand: planner.stats() } : {}) }), config.progressMs);
   progress.unref();
   log({ event: 'service.started', ...(version ? { version } : {}), host: config.host, port: address.port, crawling: crawler !== undefined, demand: planner !== undefined, authRequired: config.apiToken !== undefined,
     seedsAdded, seedsRejected, reclaimedLeases: reclaimed, documents: documents.count().indexed });
@@ -105,4 +109,10 @@ export async function startService(config: ServiceConfig, deps: ServiceDeps = {}
     log({ event: 'service.stopped' });
   })();
   return { port: address.port, host: config.host, documents, frontier, planner, crawler, searcher, stop };
+}
+
+/** The concentration figures for the log: numbers only. Domain names appear in the authenticated /status response, never in the log. */
+function logConcentration(frontier: Frontier, now: number): Record<string, unknown> {
+  const c = frontier.concentration(now); const strip = ({ topDomain, ...numbers }: typeof c.pending) => { void topDomain; return numbers; };
+  return { pending: strip(c.pending), crawled: strip(c.crawled), warnings: c.warnings.length };
 }

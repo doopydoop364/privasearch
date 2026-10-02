@@ -1,5 +1,8 @@
 import { PrivaNetClient } from '@privanet/sdk';
+import { parseFamilies } from './domain.js';
 import type { FrontierOptions } from './frontier.js';
+import { resolvePolicy } from './policy-options.js';
+import { validateProviderEndpoint } from './provider.js';
 
 /**
  * Configuration for the long-running service, from environment variables only. Credentials are never accepted on the command line (they would
@@ -11,8 +14,12 @@ import type { FrontierOptions } from './frontier.js';
 export interface ServiceConfig {
   dbPath: string; host: string; port: number; apiToken?: string;
   privanet?: { coordinatorUrl: string; tokens: { DEMAND: string; PUBLIC: string }; allowInsecureLoopback: boolean; waitTimeoutMs: number; pollMs: number };
-  concurrency: number; seeds: string[]; templates: string[];
+  concurrency: number; seeds: string[]; /** Optional operator labels from the seed file (`URL class=docs`), keyed by seed URL. */ seedClasses?: Record<string, string>; templates: string[];
   frontier: FrontierOptions;
+  /** Opt-in plain-text sitemap discovery (`/sitemap.txt`, once per host, at most 100 same-domain URLs). */
+  sitemapTxt?: boolean;
+  /** Optional discovery provider (provider.ts): off unless an endpoint AND the explicit send-queries acknowledgement are configured. */
+  provider?: { endpoint: string; maxPerHour: number; timeoutMs: number };
   demand: { enabled: boolean; minStrong: number; cooldownMs: number; maxCandidates: number; maxPendingDemand: number; maxQueriesPerHour: number };
   shutdownMs: number; progressMs: number;
 }
@@ -54,7 +61,18 @@ export function parseServiceConfig(env: Record<string, string | undefined>, seed
     privanet = { coordinatorUrl: urlSetting as string, tokens: { DEMAND: demand as string, PUBLIC: pub as string }, allowInsecureLoopback,
       waitTimeoutMs: integer('PRIVASEARCH_WAIT_TIMEOUT_MS', env.PRIVASEARCH_WAIT_TIMEOUT_MS, 60000, 1000, 600000), pollMs: integer('PRIVASEARCH_POLL_MS', env.PRIVASEARCH_POLL_MS, 100, 10, 5000) };
   }
-  const seeds = (seedFileText ?? '').split(/\r?\n/).map(line => line.trim()).filter(line => line !== '' && !line.startsWith('#'));
+  const seeds: string[] = []; const seedClasses: Record<string, string> = {};
+  for (const line of (seedFileText ?? '').split(/\r?\n/).map(l => l.trim()).filter(l => l !== '' && !l.startsWith('#'))) {
+    const [url, ...rest] = line.split(/\s+/); seeds.push(url as string);
+    for (const token of rest) { const m = /^class=([a-z0-9_-]{1,24})$/i.exec(token); if (!m?.[1]) throw new ConfigError(['PRIVASEARCH_SEEDS'], 'a seed line is "URL" or "URL class=name" (letters, digits, - and _)'); seedClasses[url as string] = m[1].toLowerCase(); }
+  }
+  let provider: ServiceConfig['provider'];
+  if (env.PRIVASEARCH_DISCOVERY_PROVIDER_URL) {
+    // The query leaves PrivaSearch when a provider is used, so the operator must say so explicitly; the endpoint is never echoed (it can embed a secret path).
+    if (env.PRIVASEARCH_DISCOVERY_PROVIDER_SEND_QUERIES !== 'true') throw new ConfigError(['PRIVASEARCH_DISCOVERY_PROVIDER_SEND_QUERIES'], 'a discovery provider receives the words of weak searches: set PRIVASEARCH_DISCOVERY_PROVIDER_SEND_QUERIES=true to confirm that is acceptable');
+    try { validateProviderEndpoint(env.PRIVASEARCH_DISCOVERY_PROVIDER_URL); } catch (error) { throw new ConfigError(['PRIVASEARCH_DISCOVERY_PROVIDER_URL'], error instanceof Error ? error.message : 'invalid provider endpoint'); }
+    provider = { endpoint: env.PRIVASEARCH_DISCOVERY_PROVIDER_URL, maxPerHour: integer('PRIVASEARCH_DISCOVERY_PROVIDER_MAX_PER_HOUR', env.PRIVASEARCH_DISCOVERY_PROVIDER_MAX_PER_HOUR, 20, 1, 3600), timeoutMs: integer('PRIVASEARCH_DISCOVERY_PROVIDER_TIMEOUT_MS', env.PRIVASEARCH_DISCOVERY_PROVIDER_TIMEOUT_MS, 5000, 500, 60000) };
+  } else if (env.PRIVASEARCH_DISCOVERY_PROVIDER_SEND_QUERIES === 'true') throw new ConfigError(['PRIVASEARCH_DISCOVERY_PROVIDER_URL'], 'PRIVASEARCH_DISCOVERY_PROVIDER_SEND_QUERIES is set but there is no PRIVASEARCH_DISCOVERY_PROVIDER_URL');
   const templates = (env.PRIVASEARCH_DISCOVERY_TEMPLATES ?? '').split(/\s+/).filter(Boolean);
   const ms = (name: string, fallback: number, min: number, max: number) => integer(name, env[name], fallback, min, max);
   const frontier: FrontierOptions = {
@@ -62,12 +80,50 @@ export function parseServiceConfig(env: Record<string, string | undefined>, seed
     recrawlMs: ms('PRIVASEARCH_RECRAWL_MS', 7 * 86400000, 60000, 365 * 86400000), recrawlMinMs: ms('PRIVASEARCH_RECRAWL_MIN_MS', 6 * 3600000, 60000, 365 * 86400000),
     recrawlMaxMs: ms('PRIVASEARCH_RECRAWL_MAX_MS', 60 * 86400000, 60000, 3650 * 86400000),
   };
+  Object.assign(frontier, parsePolicy(env));
   if ((frontier.recrawlMinMs ?? 0) > (frontier.recrawlMaxMs ?? 0)) throw new ConfigError(['PRIVASEARCH_RECRAWL_MIN_MS', 'PRIVASEARCH_RECRAWL_MAX_MS'], 'PRIVASEARCH_RECRAWL_MIN_MS must not exceed PRIVASEARCH_RECRAWL_MAX_MS');
   return {
     dbPath: env.PRIVASEARCH_DB ?? './var/privasearch.sqlite', host, port: integer('PRIVASEARCH_PORT', env.PRIVASEARCH_PORT, 4020, 0, 65535), ...(apiToken ? { apiToken } : {}),
-    ...(privanet ? { privanet } : {}), concurrency: integer('PRIVASEARCH_CONCURRENCY', env.PRIVASEARCH_CONCURRENCY, 8, 1, 512), seeds, templates, frontier,
+    ...(privanet ? { privanet } : {}), concurrency: integer('PRIVASEARCH_CONCURRENCY', env.PRIVASEARCH_CONCURRENCY, 8, 1, 512), seeds, seedClasses, templates, frontier, sitemapTxt: bool('PRIVASEARCH_SITEMAP_TXT', env.PRIVASEARCH_SITEMAP_TXT, false), ...(provider ? { provider } : {}),
     demand: { enabled: bool('PRIVASEARCH_DEMAND', env.PRIVASEARCH_DEMAND, true), minStrong: ms('PRIVASEARCH_DEMAND_MIN_RESULTS', 3, 1, 50), cooldownMs: ms('PRIVASEARCH_DEMAND_COOLDOWN_MS', 30 * 60000, 1000, 86400000),
       maxCandidates: ms('PRIVASEARCH_DEMAND_MAX_CANDIDATES', 12, 1, 100), maxPendingDemand: ms('PRIVASEARCH_DEMAND_MAX_PENDING', 300, 1, 100000), maxQueriesPerHour: ms('PRIVASEARCH_DEMAND_MAX_PER_HOUR', 30, 1, 100000) },
     shutdownMs: ms('PRIVASEARCH_SHUTDOWN_MS', 15000, 0, 300000), progressMs: ms('PRIVASEARCH_PROGRESS_MS', 60000, 1000, 3600000),
   };
+}
+
+/**
+ * The crawl-quality settings (docs/crawl-quality.md). Each is validated by name here, so a typo is reported as the setting that holds it, never as a value;
+ * the cross-field rules live in resolvePolicy and are reported against the settings they involve.
+ */
+function parsePolicy(env: Record<string, string | undefined>): FrontierOptions {
+  const int = (name: string, fallback: number | undefined, min: number, max: number): number | undefined => (env[name] === undefined || env[name] === '' ? fallback : integer(name, env[name], 0, min, max));
+  const out: FrontierOptions = {};
+  const set = <K extends keyof FrontierOptions>(key: K, value: FrontierOptions[K]) => { if (value !== undefined) out[key] = value; };
+  set('maxPendingPerDomain', int('PRIVASEARCH_MAX_PENDING_PER_DOMAIN', undefined, 1, 10_000_000)); set('maxPendingPerFamily', int('PRIVASEARCH_MAX_PENDING_PER_FAMILY', undefined, 1, 10_000_000));
+  set('maxPendingTotal', int('PRIVASEARCH_MAX_PENDING_TOTAL', undefined, 1, 100_000_000)); set('domainConcurrency', int('PRIVASEARCH_DOMAIN_CONCURRENCY', undefined, 1, 64));
+  set('familyConcurrency', int('PRIVASEARCH_FAMILY_CONCURRENCY', undefined, 1, 256)); set('saturationPages', int('PRIVASEARCH_SATURATION_PAGES', undefined, 1, 10_000_000));
+  if (env.PRIVASEARCH_RECRAWL_SHARE) { const share = Number(env.PRIVASEARCH_RECRAWL_SHARE); if (!(share >= 0 && share <= 1)) throw new ConfigError(['PRIVASEARCH_RECRAWL_SHARE'], 'PRIVASEARCH_RECRAWL_SHARE must be from 0 to 1'); out.recrawlShare = share; }
+  set('yieldHalfLifeMs', int('PRIVASEARCH_YIELD_HALF_LIFE_MS', undefined, 60000, 3650 * 86400000));
+  set('maxInternalLinksPerPage', int('PRIVASEARCH_MAX_INTERNAL_LINKS', undefined, 0, 100)); set('maxExternalLinksPerPage', int('PRIVASEARCH_MAX_EXTERNAL_LINKS', undefined, 0, 100));
+  set('maxSiblingLinksPerPage', int('PRIVASEARCH_MAX_SIBLING_LINKS', undefined, 0, 100)); set('externalBonus', int('PRIVASEARCH_EXTERNAL_BONUS', undefined, 0, 50)); set('relevanceBonus', int('PRIVASEARCH_RELEVANCE_BONUS', undefined, 0, 50));
+  if (env.PRIVASEARCH_MIN_DOMAIN_WEIGHT) { const w = Number(env.PRIVASEARCH_MIN_DOMAIN_WEIGHT); if (!(w > 0 && w <= 1)) throw new ConfigError(['PRIVASEARCH_MIN_DOMAIN_WEIGHT'], 'PRIVASEARCH_MIN_DOMAIN_WEIGHT must be above 0 and at most 1'); out.minWeight = w; }
+  if (env.PRIVASEARCH_EXPLORE_SHARES) {
+    const parts = env.PRIVASEARCH_EXPLORE_SHARES.split('/').map(Number);
+    if (parts.length !== 3 || parts.some(n => !Number.isInteger(n) || n < 0 || n > 100) || parts[0]! + parts[1]! + parts[2]! !== 100) throw new ConfigError(['PRIVASEARCH_EXPLORE_SHARES'], 'PRIVASEARCH_EXPLORE_SHARES must be three whole percentages totalling 100, for example 70/20/10 (exploit/explore/wildcard)');
+    out.explore = { exploit: parts[0]!, explore: parts[1]!, wildcard: parts[2]! };
+  }
+  if (env.PRIVASEARCH_LANGUAGES) {
+    const list = env.PRIVASEARCH_LANGUAGES.split(',').map(l => l.trim().toLowerCase()).filter(Boolean);
+    if (list.length === 0 || list.some(l => l !== '*' && !/^[a-z]{2,3}$/.test(l))) throw new ConfigError(['PRIVASEARCH_LANGUAGES'], 'PRIVASEARCH_LANGUAGES must be a comma-separated list of language codes such as en,de, or *');
+    out.preferredLanguages = list;
+  }
+  if (env.PRIVASEARCH_LANGUAGE_MODE) { if (env.PRIVASEARCH_LANGUAGE_MODE !== 'filter' && env.PRIVASEARCH_LANGUAGE_MODE !== 'deprioritize') throw new ConfigError(['PRIVASEARCH_LANGUAGE_MODE'], 'PRIVASEARCH_LANGUAGE_MODE must be filter or deprioritize'); out.languageMode = env.PRIVASEARCH_LANGUAGE_MODE; }
+  if (env.PRIVASEARCH_TRACKING_PARAMS) {
+    const list = env.PRIVASEARCH_TRACKING_PARAMS.split(',').map(p => p.trim().toLowerCase()).filter(Boolean);
+    if (list.some(p => !/^[a-z0-9_.-]{1,40}$/.test(p))) throw new ConfigError(['PRIVASEARCH_TRACKING_PARAMS'], 'PRIVASEARCH_TRACKING_PARAMS must be a comma-separated list of parameter names'); out.trackingParams = list;
+  }
+  if (env.PRIVASEARCH_DOMAIN_FAMILIES) { try { out.families = parseFamilies(env.PRIVASEARCH_DOMAIN_FAMILIES); } catch { throw new ConfigError(['PRIVASEARCH_DOMAIN_FAMILIES'], 'PRIVASEARCH_DOMAIN_FAMILIES must look like family=domain.org,other.org;family2=third.org, with no domain in two families'); } }
+  try { resolvePolicy(out); }
+  catch (error) { throw new ConfigError(['PRIVASEARCH_MAX_PENDING_PER_DOMAIN', 'PRIVASEARCH_MAX_PENDING_PER_FAMILY'], error instanceof RangeError ? error.message : 'invalid crawl-quality settings'); }
+  return out;
 }
