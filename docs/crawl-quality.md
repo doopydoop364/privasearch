@@ -111,7 +111,7 @@ All settings are `PRIVASEARCH_*` environment variables, documented with defaults
 | `PRIVASEARCH_MAX_INTERNAL_LINKS`, `_MAX_EXTERNAL_LINKS`, `_MAX_SIBLING_LINKS` | 25, 40, 2 |
 | `PRIVASEARCH_EXTERNAL_BONUS`, `PRIVASEARCH_RELEVANCE_BONUS` | 12, 6 |
 | `PRIVASEARCH_TRACKING_PARAMS`, `PRIVASEARCH_DOMAIN_FAMILIES` | none |
-| `PRIVASEARCH_RECRAWL_SHARE` | see example file |
+| `PRIVASEARCH_RECRAWL_SHARE` | 0.25 |
 | `PRIVASEARCH_SITEMAP_TXT` | off |
 | `PRIVASEARCH_DISCOVERY_PROVIDER_*` | off |
 
@@ -134,14 +134,14 @@ In the final pending frontier of scenario A the wiki holds 99.7 % of what is *le
 
 ### Scale (`node dist/tests/bench/scale.js 10000 100000`)
 
-File-backed SQLite, one process, this container (not a production host), N pending URLs over N/40 domains with one giant domain holding 60 % of them, a steady crawl of 300 leases of 8 with each batch completed before the next:
+File-backed SQLite, one process, this container (not a production host). N pending URLs over N/40 domains; one giant domain holds 60 % of them. 98 % are inserted as *discovered* URLs, so every insert runs the full admission path (budgets are lifted for the benchmark so all are admitted), 2 % are seeds. A steady crawl of 300 leases of 8, each batch completed (with `recordPage`) before the next lease. `prune` runs with `keepPerDomain=20`, so it plans real work.
 
-| Pending URLs | Insert (rows/s) | Lease of 8, p50 / p99 | Complete + domain stats (avg) | Stats + detail | Concentration | `analyze` | Prune dry-run | DB size |
+| Pending URLs | Insert incl. admission (rows/s) | Lease of 8, p50 / p99 | Complete + domain stats (avg) | `stats`+`detail` | Concentration | `analyze` | Prune dry-run (candidates) | DB size |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 10,000 | 6,168 | 5.8 / 27 ms | 0.89 ms | 0.4 ms | 0.5 ms | 17 ms | 6 ms | 4.5 MB |
-| 100,000 | 6,283 | 5.8 / 24 ms | 0.89 ms | 0.5 ms | 0.9 ms | 153 ms | 93 ms | 40.8 MB |
+| 10,000 | 5,149 | 6.1 / 24 ms | 0.95 ms | 0.4 ms | 0.5 ms | 18 ms | 56 ms (7,580) | 4.6 MB |
+| 100,000 | 5,058 | 6.4 / 24 ms | 0.94 ms | 0.8 ms | 1.4 ms | 161 ms | 2.76 s (85,980) | 36.6 MB |
 
-Lease time is flat from 10k to 100k. The benchmark found two real problems that are fixed in this branch: the domain's URL pick sorted every pending row of a giant domain (lease p50 32 ms at 100k, growing linearly), and demand/recrawl lookups used an index that could not satisfy their ordering. The 10k case runs in the test suite with generous limits (`tests/scale.test.ts`) so a regression to a table scan fails CI.
+Lease time is flat from 10k to 100k; prune dry-run grows with the work it plans (a read-only plan, never blocking the service). The benchmark found two real problems, fixed in this branch (same harness, before and after): the planner used a full-table index for the candidate-domain check and for demand/recrawl lookups (3,000 pending URLs: lease p50 20 ms -> 1.2 ms, with `INDEXED BY`), and the domain URL pick sorted every pending row of a giant domain because of an `ORDER BY` tie-break the index could not serve (profile of 400 pick queries at 100k pending: 213 ms -> 20 ms in total). The 10k case also runs in the test suite with generous limits (`tests/scale.test.ts`), so a regression to a table scan fails CI.
 
 A 1,000,000-row run was started and had not finished when this document was written; no 1M number is claimed. Re-run with `node dist/tests/bench/scale.js 1000000`.
 

@@ -17,7 +17,7 @@ Crawl quality: a frontier dominated by one giant site (Wikipedia and its languag
 
 ### Changed
 - Counters (`/status`, `/health`, scheduling) are O(1), maintained by triggers in the same transaction.
-- Lease cost no longer grows with a giant domain's backlog (measured: lease of 8, p50 5.8 ms at both 10,000 and 100,000 pending URLs; before the fix, 32 ms at 100,000).
+- Lease cost no longer grows with a giant domain's backlog (measured: lease of 8, p50 6.1 ms at 10,000 and 6.4 ms at 100,000 pending URLs; at 3,000 pending URLs the index fix took the p50 from 20 ms to 1.2 ms).
 - On the synthetic web the wiki's share of fetches falls from 83-96 % to 22-30 %, and the first independent site is fetched at fetch 2-3 instead of 17-21.
 
 ### Not done

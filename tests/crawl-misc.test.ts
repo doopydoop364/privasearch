@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { openDatabase, rebuildCounters } from '../src/db.js';
 import { DocumentStore } from '../src/documents.js';
@@ -81,4 +85,13 @@ test('a missing sitemap.txt is a guess that did not pay off: it does not count a
   const rg = rig((input: { url: string }) => input.url.endsWith('/sitemap.txt') ? outcomeResult('HTTP_ERROR', input.url, rg.time.now, { httpStatus: 404 }) : pageResult(input.url, rg.time.now, { title: 't', text: `content ${input.url} `.repeat(8) }), { hostDelayMs: 0 });
   rg.frontier.add('https://site.example/sitemap.txt', { queue: 'PUBLIC', source: 'sitemap' }, rg.time.now); await rg.crawler.runOnce();
   assert.equal(Number((rg.db.prepare(`SELECT errors AS n FROM domains WHERE domain='site.example'`).get() as { n: number }).n), 0);
+});
+
+test('a read-only connection to a v4 database can open the stores (no hidden schema write)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ps-ro-')); const path = join(dir, 'ro.sqlite');
+  try {
+    const w = openDatabase(path); new DocumentStore(w); new Frontier(w, {}).add('https://a.example/', { queue: 'PUBLIC', source: 'seed' }, 1); w.close();
+    const db = new DatabaseSync(path, { readOnly: true });
+    try { assert.deepEqual(new DocumentStore(db).count(), { documents: 0, indexed: 0, duplicates: 0 }); assert.equal(new Frontier(db, { readOnly: true }).stats().PENDING, 1); } finally { db.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

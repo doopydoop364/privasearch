@@ -166,7 +166,11 @@ export function initSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS urls_pending_demand ON urls(priority, next_at) WHERE state='PENDING' AND queue='DEMAND';`);
   const version = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
   if (version >= 4) {
-    db.exec(TABLES_V4); db.exec(TRIGGERS_V4);
+    // Re-running the idempotent statements (CREATE ... IF NOT EXISTS, INSERT OR IGNORE) is still a write, which a read-only connection (tests, tools, a backup reader)
+    // must be able to avoid: only run them when something is actually missing.
+    const have = new Set((db.prepare(`SELECT name FROM sqlite_master WHERE type IN ('trigger','table')`).all() as Array<{ name: string }>).map(r => r.name));
+    const wanted = [...TRIGGERS_V4.matchAll(/CREATE TRIGGER IF NOT EXISTS (\w+)/g), ...TABLES_V4.matchAll(/CREATE TABLE IF NOT EXISTS (\w+)/g)].map(m => m[1]!);
+    if (wanted.some(name => !have.has(name))) { db.exec(TABLES_V4); db.exec(TRIGGERS_V4); }
     // Rows written by an older version after a rollback have no domain (their trigger-less inserts are invisible to the counters): adopt them.
     if (db.prepare('SELECT 1 FROM urls WHERE domain IS NULL LIMIT 1').get() !== undefined) migrateV4(db);
   }
