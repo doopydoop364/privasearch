@@ -227,7 +227,9 @@ export function inTransaction<T>(db: DatabaseSync, work: () => T): T {
 /** Opens (creating the directory if needed) and migrates the database file. `:memory:` is allowed for tests. */
 export function openDatabase(path: string): DatabaseSync {
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const db = new DatabaseSync(path); initSchema(db); return db;
+  const db = new DatabaseSync(path);
+  try { initSchema(db); } catch (error) { db.close(); throw error; } // a failed open must not keep the file locked (Windows cannot delete an open database)
+  return db;
 }
 
 /** The URL key of a canonical or link target, or undefined when the URL is not admissible. Used for the canonical and link tables. */
