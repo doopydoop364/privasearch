@@ -2,8 +2,14 @@ import { DatabaseSync } from 'node:sqlite';
 import type { FetchResult } from './privanet/contract.js';
 import type { Queue } from './privanet/transport.js';
 import { initSchema, inTransaction } from './db.js';
+import { DomainModel } from './domain.js';
+import { languagePreferred, lowValueUrl, urlLanguageHint } from './language.js';
 import { crawlTrap } from './policy.js';
 import type { TrapReason } from './policy.js';
+import { resolvePolicy } from './policy-options.js';
+import type { CrawlPolicyOptions, ResolvedCrawlPolicy } from './policy-options.js';
+import { domainWeight, priorityOf } from './scoring.js';
+import type { DomainCounters, UrlSource } from './scoring.js';
 import { parseCrawlUrl, urlKey } from './url.js';
 import type { UrlRejection } from './url.js';
 
@@ -18,7 +24,9 @@ import type { UrlRejection } from './url.js';
  * `importantRecrawlMaxMs` for a page many other hosts link to). Failed URLs back off, and a URL that kept failing is retried rarely
  * (`failedRecheckMs`) instead of never.
  */
-export interface FrontierOptions {
+export interface FrontierOptions extends CrawlPolicyOptions {
+  /** Operator-defined groups of related registrable domains (family name -> domains). Never guessed. */
+  families?: Record<string, string[]>;
   hostDelayMs?: number; maxAttempts?: number; backoffBaseMs?: number; maxBackoffMs?: number;
   /** The first recrawl interval after a URL is fetched for the first time. */
   recrawlMs?: number; recrawlMinMs?: number; recrawlMaxMs?: number; importantRecrawlMaxMs?: number;
@@ -29,21 +37,30 @@ export interface FrontierOptions {
   recrawlShare?: number;
 }
 export interface Leased { urlKey: string; url: string; host: string; queue: Queue; generation: number; depth: number; validators?: { etag?: string; lastModified?: string } }
-export type AddResult = 'ADDED' | 'EXISTS' | UrlRejection | 'TOO_DEEP' | 'HOST_BUDGET' | `TRAP:${TrapReason}`;
+export type AddResult = 'ADDED' | 'EXISTS' | UrlRejection | 'TOO_DEEP' | 'HOST_BUDGET' | 'DOMAIN_BUDGET' | 'FAMILY_BUDGET' | 'GLOBAL_BUDGET' | 'LOW_VALUE' | 'LANGUAGE_FILTERED' | `TRAP:${TrapReason}`;
+/** Why a discovered link was or was not admitted, as counted since process start (`Frontier.admission`). */
+export type AdmissionReason = 'ADDED' | 'EXISTS' | 'REJECTED_URL' | 'TOO_DEEP' | 'HOST_BUDGET' | 'DOMAIN_BUDGET' | 'FAMILY_BUDGET' | 'GLOBAL_BUDGET' | 'LOW_VALUE' | 'LANGUAGE_FILTERED' | 'TRAP';
 export type State = 'PENDING' | 'IN_FLIGHT' | 'DONE' | 'BLOCKED' | 'FAILED';
-export type Source = 'seed' | 'demand' | 'discovered' | 'redirect';
-export interface UrlRow { url_key: string; url: string; host: string; queue: Queue; priority: number; state: State; generation: number; attempts: number; next_at: number; depth: number; last_outcome: string | null; last_http: number | null; etag: string | null; last_modified: string | null; content_sha256: string | null; fetched_at: number | null; leased_at: number | null; interval_ms: number | null; change_count: number; unchanged_streak: number; last_changed_at: number | null }
+export type Source = UrlSource;
+export interface UrlRow { url_key: string; url: string; host: string; queue: Queue; priority: number; state: State; generation: number; attempts: number; next_at: number; depth: number; last_outcome: string | null; last_http: number | null; etag: string | null; last_modified: string | null; content_sha256: string | null; fetched_at: number | null; leased_at: number | null; interval_ms: number | null; change_count: number; unchanged_streak: number; last_changed_at: number | null; domain: string | null; source: Source; external: number }
 
 const DAY = 86400000;
 const HOUR = 3600000;
 
 export class Frontier {
-  private readonly o: Required<FrontierOptions>;
+  private readonly o: Required<Omit<FrontierOptions, keyof CrawlPolicyOptions | 'families'>>;
+  readonly policy: ResolvedCrawlPolicy; readonly model: DomainModel;
+  /** Admission outcomes since this process started (the persistent record is the frontier itself). */
+  readonly admission: Record<AdmissionReason, number> = { ADDED: 0, EXISTS: 0, REJECTED_URL: 0, TOO_DEEP: 0, HOST_BUDGET: 0, DOMAIN_BUDGET: 0, FAMILY_BUDGET: 0, GLOBAL_BUDGET: 0, LOW_VALUE: 0, LANGUAGE_FILTERED: 0, TRAP: 0 };
+  /** Position in the 100-slot exploit/explore/wildcard cycle, and the golden-ratio sequence that spreads wildcard picks over the fair-share order. */
+  private classTurn = 0; private wildcardTurn = 0; private detailCache: { at: number; recrawlDue: number; hosts: number; domains: number } | undefined;
   /** Single-slot leases alternate between new and recrawl work in a fixed pattern (one in four is a recrawl) so the share holds for limit 1 too. */
   private singleSlotTurn = 0;
   constructor(private readonly db: DatabaseSync, options: FrontierOptions = {}) {
+    const { families, domainModel, ...rest } = options as FrontierOptions & { domainModel?: DomainModel };
+    this.policy = resolvePolicy(rest); this.model = domainModel ?? new DomainModel(families ?? {});
     this.o = { hostDelayMs: 2000, maxAttempts: 5, backoffBaseMs: 60000, maxBackoffMs: 6 * HOUR, recrawlMs: 7 * DAY, recrawlMinMs: 6 * HOUR, recrawlMaxMs: 60 * DAY, importantRecrawlMaxMs: 14 * DAY,
-      goneRecheckMs: 30 * DAY, failedRecheckMs: 30 * DAY, staleLeaseMs: 300000, maxDepth: 8, maxUrlsPerHost: 2000, recrawlShare: 0.25, ...options };
+      goneRecheckMs: 30 * DAY, failedRecheckMs: 30 * DAY, staleLeaseMs: 300000, maxDepth: 8, maxUrlsPerHost: 2000, recrawlShare: 0.25, ...Object.fromEntries(Object.entries(rest).filter(([k, v]) => v !== undefined && !(k in this.policy))) };
     initSchema(db);
   }
   private transaction<T>(work: () => T): T { return inTransaction(this.db, work); }
@@ -51,35 +68,89 @@ export class Frontier {
   atomically<T>(work: () => T): T { return inTransaction(this.db, work); }
   private backoff(attempts: number): number { return Math.min(this.o.maxBackoffMs, this.o.backoffBaseMs * 2 ** Math.max(0, attempts - 1)); }
 
-  add(raw: string, options: { queue: Queue; priority?: number; depth?: number; source?: Source }, now: number): AddResult {
-    const parsed = parseCrawlUrl(raw); if (!parsed.ok) return parsed.reason;
+  private count(reason: AdmissionReason): void { this.admission[reason]++; }
+  /** The domain row exists (with its family and a fair-share start) before any URL of it is inserted. A new domain joins the schedule at the current front, not behind the backlog. */
+  private ensureDomain(domain: string, priority: number, now: number): void {
+    // The start is the current round (the front of the schedule, rounded down) plus a tiny, priority-ordered offset (far below one scheduling step), so brand-new domains are tried most promising first.
+    this.db.prepare(`INSERT OR IGNORE INTO domains (domain, family, first_seen, vtime) VALUES (?,?,?, CAST(COALESCE((SELECT MIN(vtime) FROM domains WHERE pending > 0), 0) AS INTEGER) + ? / 1000.0)`)
+      .run(domain, this.model.familyOfDomain(domain), now, Math.max(0, 100 - priority));
+  }
+
+  add(raw: string, options: { queue: Queue; priority?: number; depth?: number; source?: Source; external?: boolean; relevant?: boolean }, now: number): AddResult {
+    const result = this.admit(raw, options, now);
+    this.count(result === 'ADDED' || result === 'EXISTS' || result === 'TOO_DEEP' || result === 'HOST_BUDGET' || result === 'DOMAIN_BUDGET' || result === 'FAMILY_BUDGET' || result === 'GLOBAL_BUDGET' || result === 'LOW_VALUE' || result === 'LANGUAGE_FILTERED' ? result : result.startsWith('TRAP:') ? 'TRAP' : 'REJECTED_URL');
+    return result;
+  }
+
+  /**
+   * Admission BEFORE insertion. Order, cheapest first; a URL stops at the first refusal and nothing is written for it:
+   *   1 URL policy  2 depth  3 already known (priority/demand promotion only)  4 non-content URL (LOW_VALUE)  5 language hint (LANGUAGE_FILTERED)
+   *   6 crawl trap  7 host budget  8 domain pending budget  9 family pending budget  10 global pending budget
+   * Steps 4-10 apply to DISCOVERED links only: a seed, a redirect target, a sitemap/provider candidate or an explicit demand request is never judged by them.
+   * Counts come from trigger-maintained counters, never from scanning `urls`.
+   */
+  private admit(raw: string, options: { queue: Queue; priority?: number; depth?: number; source?: Source; external?: boolean; relevant?: boolean }, now: number): AddResult {
+    const parsed = parseCrawlUrl(raw, undefined, this.policy.trackingParams); if (!parsed.ok) return parsed.reason;
     const depth = options.depth ?? 0; if (depth > this.o.maxDepth) return 'TOO_DEEP';
-    const key = urlKey(parsed.url); const priority = options.priority ?? 0;
+    const key = urlKey(parsed.url); const discovered = options.source === 'discovered';
+    const source: Source = options.source ?? (options.queue === 'DEMAND' ? 'demand' : 'seed');
     const known = this.db.prepare('SELECT queue, priority FROM urls WHERE url_key=?').get(key) as { queue: Queue; priority: number } | undefined;
+    const hint = urlLanguageHint(parsed.url); const hintAllowed = languagePreferred(hint, this.policy.preferredLanguages);
+    // A caller that names neither a priority nor a source gets 0 (an operator-added URL); one that names a source gets that source's scored priority.
+    const priority = options.priority ?? (options.source === undefined ? 0 : priorityOf({ source, depth, external: options.external ?? false, relevant: options.relevant ?? false, languageHintAllowed: hintAllowed || this.policy.languageMode === 'filter', hasQuery: parsed.url.includes('?') }, this.policy).total);
     if (known) {
       // Demand promotes a URL already known as public work, so explicit user demand is never queued behind discovery; a better priority is kept.
       if (options.queue === 'DEMAND') {
-        this.db.prepare(`UPDATE urls SET queue='DEMAND', priority=MAX(priority, ?) WHERE url_key=? AND state='PENDING'`).run(priority, key);
+        this.db.prepare(`UPDATE urls SET queue='DEMAND', source='demand', priority=MAX(priority, ?) WHERE url_key=? AND state='PENDING'`).run(priority, key);
         // Due now, unless it is waiting out a failure backoff: demand never turns repeated searches into repeated hits on a failing URL.
         this.db.prepare(`UPDATE urls SET next_at=MIN(next_at, ?) WHERE url_key=? AND state='PENDING' AND attempts=0`).run(now, key);
       }
+      else if (source === 'seed') this.db.prepare(`UPDATE urls SET source='seed', priority=MAX(priority, ?) WHERE url_key=?`).run(priority, key); // seeds are re-marked at every start, so they stay protected from pruning
       else if (priority > known.priority) this.db.prepare(`UPDATE urls SET priority=? WHERE url_key=?`).run(priority, key);
       return 'EXISTS';
     }
-    if (options.source === 'discovered') {
+    const domain = this.model.domainOf(parsed.host);
+    if (discovered) {
+      if (lowValueUrl(parsed.url)) return 'LOW_VALUE';
+      if (!hintAllowed && this.policy.languageMode === 'filter') return 'LANGUAGE_FILTERED';
       const trap = crawlTrap(parsed.url); if (trap) return `TRAP:${trap}`;
-      const held = Number((this.db.prepare('SELECT COUNT(*) AS n FROM urls WHERE host=?').get(parsed.host) as { n: number }).n);
-      if (held >= this.o.maxUrlsPerHost) return 'HOST_BUDGET';
+      const host = this.db.prepare('SELECT urls FROM hosts WHERE host=?').get(parsed.host) as { urls: number } | undefined;
+      if (Number(host?.urls ?? 0) >= this.o.maxUrlsPerHost) return 'HOST_BUDGET';
+      const dom = this.db.prepare('SELECT pending FROM domains WHERE domain=?').get(domain) as { pending: number } | undefined;
+      if (Number(dom?.pending ?? 0) >= this.policy.maxPendingPerDomain) return 'DOMAIN_BUDGET';
+      const family = this.model.familyOfDomain(domain);
+      if (family !== domain && Number((this.db.prepare('SELECT COALESCE(SUM(pending),0) AS n FROM domains WHERE family=?').get(family) as { n: number }).n) >= this.policy.maxPendingPerFamily) return 'FAMILY_BUDGET';
+      if (Number((this.db.prepare(`SELECT n FROM states WHERE state='PENDING'`).get() as { n: number }).n) >= this.policy.maxPendingTotal) return 'GLOBAL_BUDGET';
     }
-    this.db.prepare(`INSERT OR IGNORE INTO urls (url_key, url, host, queue, priority, state, next_at, depth, discovered_at) VALUES (?,?,?,?,?, 'PENDING', ?, ?, ?)`)
-      .run(key, parsed.url, parsed.host, options.queue, priority, now, depth, now);
+    this.ensureDomain(domain, priority, now);
+    this.db.prepare(`INSERT OR IGNORE INTO urls (url_key, url, host, domain, queue, priority, state, next_at, depth, discovered_at, source, external) VALUES (?,?,?,?,?,?, 'PENDING', ?, ?, ?, ?, ?)`)
+      .run(key, parsed.url, parsed.host, domain, options.queue, priority, now, depth, now, source, options.external ? 1 : 0);
     return 'ADDED';
+  }
+
+  /** Whether the domain (and its family) may start one more request: concurrency caps per domain and per family. Reads the trigger-maintained counters, so it also sees leases made earlier in this call. */
+  private hasRoom(domain: string, family: string): boolean {
+    const row = this.db.prepare('SELECT in_flight FROM domains WHERE domain=?').get(domain) as { in_flight: number } | undefined;
+    if (Number(row?.in_flight ?? 0) >= this.policy.domainConcurrency) return false;
+    if (family === domain) return true;
+    return Number((this.db.prepare('SELECT COALESCE(SUM(in_flight),0) AS n FROM domains WHERE family=?').get(family) as { n: number }).n) < this.policy.familyConcurrency;
+  }
+
+  private slotClass(): 'exploit' | 'explore' | 'wildcard' {
+    const slot = (this.classTurn++ * 37) % 100; const e = this.policy.explore; // 37 is coprime to 100: every class is spread evenly through the cycle
+    return slot < e.exploit ? 'exploit' : slot < e.exploit + e.explore ? 'explore' : 'wildcard';
   }
 
   /**
    * DONE means "fresh until next_at": a finished URL becomes due again for recrawl. Leases at most one due URL per host, and none for a host that
-   * already has one in flight or is waiting out its delay or backoff. Order: explicit demand first; then a reserved share for due recrawls (most
-   * overdue first) and the rest for new URLs (highest priority, then oldest); whatever either side cannot use goes to the other.
+   * already has one in flight or is waiting out its delay or backoff. A registrable domain also has a concurrency cap (and so does a family).
+   *
+   * Order: (1) explicit demand first, highest priority first; (2) a reserved share for due recrawls (most overdue first); (3) new public URLs chosen by
+   * WEIGHTED FAIR QUEUEING OVER DOMAINS, not over URLs: every domain with pending work carries a virtual time, the domain with the smallest one is served
+   * next and its virtual time then advances by 1/weight (weight = saturation x yield x authority, scoring.ts). A domain with a million pending URLs and a
+   * domain with ten therefore take turns in proportion to their weights, never to their size. Within a domain the highest-priority due URL goes first.
+   * The turns are split by `explore` (default 70/20/10): the fairest-share domain, the youngest domain (fewer than 5 pages crawled), or a pseudo-random one.
+   * Whatever a class cannot use falls through to the next, so capacity is never wasted.
    */
   lease(now: number, limit: number): Leased[] {
     return this.transaction(() => {
@@ -87,27 +158,66 @@ export class Frontier {
       const due = `u.next_at <= ? AND COALESCE(h.next_allowed_at,0) <= ? AND COALESCE(h.backoff_until,0) <= ? AND NOT EXISTS (SELECT 1 FROM urls x WHERE x.host = u.host AND x.state='IN_FLIGHT')`;
       const select = (where: string, order: string, cap: number) => this.db.prepare(`SELECT u.* FROM urls u LEFT JOIN hosts h ON h.host = u.host WHERE ${where} AND ${due} ORDER BY ${order} LIMIT ?`)
         .all(now, now, now, Math.max(1, cap) * 8) as unknown as UrlRow[];
+      const claim = (row: UrlRow): void => {
+        hosts.add(row.host); this.db.prepare(`UPDATE urls SET state='IN_FLIGHT', leased_at=? WHERE url_key=?`).run(now, row.url_key);
+        if (row.domain) this.db.prepare('UPDATE domains SET leased = leased + 1 WHERE domain=?').run(row.domain);
+        const validators = { ...(row.etag ? { etag: row.etag } : {}), ...(row.last_modified ? { lastModified: row.last_modified } : {}) };
+        // A recrawl is background work whatever queue first brought the URL in; only a pending demand request uses the demand credential.
+        const queue: Queue = row.state === 'PENDING' ? row.queue : 'PUBLIC';
+        out.push({ urlKey: row.url_key, url: row.url, host: row.host, queue, generation: row.generation, depth: row.depth, ...(Object.keys(validators).length ? { validators } : {}) });
+      };
       const take = (rows: UrlRow[], cap: number) => {
         let taken = 0;
         for (const row of rows) {
-          if (taken >= cap || out.length >= want) break; if (hosts.has(row.host)) continue; hosts.add(row.host);
-          this.db.prepare(`UPDATE urls SET state='IN_FLIGHT', leased_at=? WHERE url_key=?`).run(now, row.url_key);
-          const validators = { ...(row.etag ? { etag: row.etag } : {}), ...(row.last_modified ? { lastModified: row.last_modified } : {}) };
-          // A recrawl is background work whatever queue first brought the URL in; only a pending demand request uses the demand credential.
-          const queue: Queue = row.state === 'PENDING' ? row.queue : 'PUBLIC';
-          out.push({ urlKey: row.url_key, url: row.url, host: row.host, queue, generation: row.generation, depth: row.depth, ...(Object.keys(validators).length ? { validators } : {}) }); taken++;
+          if (taken >= cap || out.length >= want) break; if (hosts.has(row.host)) continue;
+          if (row.domain && !this.hasRoom(row.domain, this.model.familyOfDomain(row.domain))) continue;
+          claim(row); taken++;
         }
       };
       take(select(`u.state='PENDING' AND u.queue='DEMAND'`, 'u.priority DESC, u.next_at, u.url_key', want), want);
       const rest = want - out.length; if (rest <= 0) return out;
-      const recrawlQuota = rest >= 2 ? Math.ceil(rest * this.o.recrawlShare) : (this.singleSlotTurn++ % 4 === 3 ? 1 : 0);
-      const fresh = () => select(`u.state='PENDING' AND u.queue='PUBLIC'`, 'u.priority DESC, u.next_at, u.url_key', rest);
+      const recrawlQuota = rest >= 2 ? Math.ceil(rest * this.policy_recrawlShare()) : (this.singleSlotTurn++ % 4 === 3 ? 1 : 0);
       const recrawl = () => select(`u.state IN ('DONE','FAILED')`, `CASE u.state WHEN 'DONE' THEN 0 ELSE 1 END, u.next_at, u.url_key`, rest);
       take(recrawl(), recrawlQuota);
-      take(fresh(), rest);
-      take(recrawl(), rest);
+      const vmin = Number((this.db.prepare('SELECT COALESCE(MIN(vtime),0) AS v FROM domains WHERE pending > 0').get() as { v: number }).v);
+      while (out.length < want) { const row = this.pickFresh(now, hosts, vmin); if (!row) break; claim(row); }
+      take(recrawl(), want - out.length);
       return out;
     });
+  }
+  private policy_recrawlShare(): number { return this.o.recrawlShare; }
+
+  /** Candidate domains for one slot, in the order the slot's class prefers. At most 64: a domain that cannot be served right now is charged and the next is tried. */
+  private candidates(kind: 'exploit' | 'explore' | 'wildcard', vmin: number): Array<DomainCounters & { domain: string; family: string; vtime: number }> {
+    const columns = 'domain, family, vtime, done, yield, yield_at, ref_domains';
+    const room = this.policy.domainConcurrency;
+    if (kind === 'explore') return this.db.prepare(`SELECT ${columns} FROM domains WHERE pending > 0 AND done < 5 AND in_flight < ? ORDER BY vtime LIMIT 64`).all(room) as never;
+    if (kind === 'wildcard') {
+      const vmax = Number((this.db.prepare('SELECT COALESCE(MAX(vtime),0) AS v FROM domains WHERE pending > 0').get() as { v: number }).v);
+      const at = vmin + ((this.wildcardTurn++ * 0.6180339887498949) % 1) * Math.max(0, vmax - vmin);
+      return this.db.prepare(`SELECT ${columns} FROM domains WHERE pending > 0 AND vtime >= ? AND in_flight < ? ORDER BY vtime LIMIT 64`).all(at, room) as never;
+    }
+    return this.db.prepare(`SELECT ${columns} FROM domains WHERE pending > 0 AND in_flight < ? ORDER BY vtime LIMIT 64`).all(room) as never;
+  }
+
+  private pickFresh(now: number, hosts: Set<string>, vmin: number): UrlRow | undefined {
+    const first = this.slotClass();
+    const order: Array<'exploit' | 'explore' | 'wildcard'> = first === 'exploit' ? ['exploit'] : [first, 'exploit'];
+    const pick = this.db.prepare(`SELECT u.* FROM urls u LEFT JOIN hosts h ON h.host = u.host WHERE u.domain = ? AND u.state='PENDING' AND u.queue='PUBLIC' AND u.next_at <= ?
+      AND COALESCE(h.next_allowed_at,0) <= ? AND COALESCE(h.backoff_until,0) <= ? AND NOT EXISTS (SELECT 1 FROM urls x WHERE x.host = u.host AND x.state='IN_FLIGHT')
+      ORDER BY u.priority DESC, u.next_at, u.url_key LIMIT 8`);
+    const charge = this.db.prepare('UPDATE domains SET vtime = ? WHERE domain = ?');
+    for (const kind of order) {
+      for (const d of this.candidates(kind, vmin)) {
+        if (!this.hasRoom(d.domain, d.family)) continue;
+        // The best due URL of this domain whose host is not already used by this lease. A domain whose hosts are all busy or waiting is charged like a served one
+        // (it could not use its turn), which moves it behind its peers instead of letting it clog the head of the order.
+        const rows = pick.all(d.domain, now, now, now) as unknown as UrlRow[]; const row = rows.find(r => !hosts.has(r.host));
+        charge.run(Math.max(d.vtime, vmin) + 1 / domainWeight(d, now, this.policy).weight, d.domain);
+        if (row) return row;
+      }
+    }
+    return undefined;
   }
 
   /** Returns leases that were never completed (a crash, a lost result) to the queue without counting an attempt. */
@@ -167,6 +277,8 @@ export class Frontier {
       // Requesting a host, whatever came back, spends its politeness budget; a success clears its failure streak.
       this.db.prepare(`INSERT INTO hosts (host, next_allowed_at) VALUES (?,?) ON CONFLICT(host) DO UPDATE SET next_allowed_at=MAX(next_allowed_at, excluded.next_allowed_at)`).run(row.host, now + delay);
       const http = result.httpStatus ?? null; const gone = now + this.o.goneRecheckMs;
+      const errored = result.outcome === 'FETCH_FAILED' || result.outcome === 'UNSUPPORTED_CONTENT_TYPE' || result.outcome === 'TOO_LARGE' || (result.outcome === 'HTTP_ERROR' && result.httpStatus !== 429);
+      if (errored) this.recordPage(key, 'error', now);
       switch (result.outcome) {
         case 'FETCHED': {
           const changed = row.content_sha256 === null || result.contentSha256 === undefined ? null : row.content_sha256 !== result.contentSha256;
@@ -205,19 +317,40 @@ export class Frontier {
 
   get(key: string): UrlRow | undefined { return this.db.prepare('SELECT * FROM urls WHERE url_key=?').get(key) as unknown as UrlRow | undefined; }
   getByUrl(raw: string): UrlRow | undefined { const parsed = parseCrawlUrl(raw); return parsed.ok ? this.get(urlKey(parsed.url)) : undefined; }
+  /** Counts per state, read from the trigger-maintained `states` table: O(1), safe to call from /status on a frontier of any size. */
   stats(): Record<State, number> {
     const out: Record<State, number> = { PENDING: 0, IN_FLIGHT: 0, DONE: 0, BLOCKED: 0, FAILED: 0 };
-    for (const row of this.db.prepare('SELECT state, COUNT(*) AS n FROM urls GROUP BY state').all() as unknown as Array<{ state: State; n: number }>) out[row.state] = Number(row.n);
+    for (const row of this.db.prepare(`SELECT state, n FROM states WHERE state IN ('PENDING','IN_FLIGHT','DONE','BLOCKED','FAILED')`).all() as unknown as Array<{ state: State; n: number }>) out[row.state] = Number(row.n);
     return out;
   }
-  /** The demand backlog alone (the planner asks on every weak search; `detail` also counts hosts and due recrawls, which scans the whole frontier). */
-  pendingDemand(): number { return Number((this.db.prepare(`SELECT COUNT(*) AS n FROM urls INDEXED BY urls_pending_demand WHERE state='PENDING' AND queue='DEMAND'`).get() as { n: number }).n); }
-  /** Counts for operators: the demand backlog, background backlog, and recrawls that are due now. */
-  detail(now: number): { pendingDemand: number; pendingPublic: number; recrawlDue: number; hosts: number } {
+  /** The demand backlog alone (the planner asks on every weak search). */
+  pendingDemand(): number { return Number((this.db.prepare(`SELECT n FROM states WHERE state='PENDING_DEMAND'`).get() as { n: number }).n); }
+  /**
+   * Counts for operators. Backlog sizes are exact and O(1). The two that need a scan (recrawls due now, distinct hosts and domains) are cached for 15 s, so a
+   * status page polled every second costs one scan per 15 s, not one per request.
+   */
+  detail(now: number): { pendingDemand: number; pendingPublic: number; recrawlDue: number; hosts: number; domains: number } {
     const n = (sql: string, ...args: number[]) => Number((this.db.prepare(sql).get(...args) as { n: number }).n);
-    return {
-      pendingDemand: n(`SELECT COUNT(*) AS n FROM urls WHERE state='PENDING' AND queue='DEMAND'`), pendingPublic: n(`SELECT COUNT(*) AS n FROM urls WHERE state='PENDING' AND queue='PUBLIC'`),
-      recrawlDue: n(`SELECT COUNT(*) AS n FROM urls WHERE state IN ('DONE','FAILED') AND next_at <= ?`, now), hosts: n('SELECT COUNT(DISTINCT host) AS n FROM urls'),
-    };
+    if (!this.detailCache || Math.abs(now - this.detailCache.at) >= 15000) {
+      this.detailCache = { at: now, recrawlDue: n(`SELECT COUNT(*) AS n FROM urls WHERE state IN ('DONE','FAILED') AND next_at <= ?`, now), hosts: n('SELECT COUNT(*) AS n FROM hosts WHERE urls > 0'), domains: n('SELECT COUNT(*) AS n FROM domains WHERE urls > 0') };
+    }
+    const pending = n(`SELECT n FROM states WHERE state='PENDING'`); const demand = this.pendingDemand();
+    return { pendingDemand: demand, pendingPublic: pending - demand, recrawlDue: this.detailCache.recrawlDue, hosts: this.detailCache.hosts, domains: this.detailCache.domains };
+  }
+
+  /**
+   * One finished page's contribution to its domain's yield. `useful` = indexed and not a duplicate or low-value page; the others count against it. The yield is an
+   * exponentially weighted rate (new sample 10%), measured from the decayed value so an old verdict has already faded. Neutral outcomes record nothing.
+   */
+  recordPage(key: string, kind: 'useful' | 'duplicate' | 'low_value' | 'error', now: number): void {
+    const row = this.db.prepare('SELECT d.domain, d.done, d.yield, d.yield_at, d.ref_domains FROM urls u JOIN domains d ON d.domain = u.domain WHERE u.url_key=?').get(key) as unknown as (DomainCounters & { domain: string }) | undefined; if (!row) return;
+    const current = domainWeight(row, now, this.policy).yieldEff; const sample = kind === 'useful' ? 1 : 0;
+    this.db.prepare(`UPDATE domains SET fetched = fetched + ?, useful = useful + ?, duplicates = duplicates + ?, low_value = low_value + ?, errors = errors + ?, yield = ?, yield_at = ? WHERE domain = ?`)
+      .run(kind === 'error' ? 0 : 1, kind === 'useful' ? 1 : 0, kind === 'duplicate' ? 1 : 0, kind === 'low_value' ? 1 : 0, kind === 'error' ? 1 : 0, Math.min(1, Math.max(0, current * 0.9 + sample * 0.1)), now, row.domain);
+  }
+  /** Records that a page of `srcDomain` links to `dstDomain` (once per pair): the count of independent referring domains is the authority signal. */
+  noteDomainLink(srcDomain: string, dstDomain: string): void {
+    if (srcDomain === dstDomain) return;
+    if (Number(this.db.prepare('INSERT OR IGNORE INTO domain_links (src_domain, dst_domain) VALUES (?,?)').run(srcDomain, dstDomain).changes) > 0) this.db.prepare('UPDATE domains SET ref_domains = ref_domains + 1 WHERE domain=?').run(dstDomain);
   }
 }

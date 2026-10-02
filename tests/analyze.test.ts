@@ -8,7 +8,7 @@ import { openDatabase } from '../src/db.js';
 import { Frontier } from '../src/frontier.js';
 
 function fixture() {
-  const dir = mkdtempSync(join(tmpdir(), 'privasearch-analyze-')); const path = join(dir, 'p.sqlite'); const db = openDatabase(path); const f = new Frontier(db, { maxUrlsPerHost: 100000 });
+  const dir = mkdtempSync(join(tmpdir(), 'privasearch-analyze-')); const path = join(dir, 'p.sqlite'); const db = openDatabase(path); const f = new Frontier(db, { maxUrlsPerHost: 100000, maxPendingPerDomain: 100000, maxPendingPerFamily: 100000, preferredLanguages: ['*'] });
   for (const lang of ['en', 'de', 'fr', 'ja']) for (let i = 0; i < 50; i++) f.add(`https://${lang}.wikipedia.org/wiki/A${i}`, { queue: 'PUBLIC', priority: 44, depth: 1, source: 'discovered' }, 1);
   f.add('https://example.org/', { queue: 'PUBLIC', priority: 60, source: 'seed' }, 1); f.add('https://news.example.net/a', { queue: 'DEMAND', priority: 100, source: 'demand' }, 1);
   db.prepare('INSERT INTO links (src_key, dst_key, dst_url, src_host, dst_host) VALUES (?,?,?,?,?)').run('a', 'b', 'https://de.wikipedia.org/x', 'en.wikipedia.org', 'de.wikipedia.org');

@@ -10,6 +10,8 @@ import { parseCrawlUrl, urlKey } from './url.js';
 export interface DocumentInput {
   urlKey: string; url: string; finalUrl: string; title: string; description: string; canonicalUrl: string | null;
   language: string | null; text: string; contentSha256: string; fetchedAt: number; httpStatus: number;
+  /** A soft 404 or an almost empty page: kept and still findable, but ranked far below real pages (down-ranked before anything is ever deleted). */
+  lowValue?: boolean;
 }
 export interface Hit { url: string; title: string; snippet: string; score: number }
 /** What `upsert` learned about the page: whether it is indexed, a duplicate, and whether its content differs from the previous fetch. */
@@ -17,7 +19,7 @@ export interface UpsertResult { duplicateOf?: string; changed: boolean; firstSee
 /** One candidate for ranking: everything the ranker needs, in one row. */
 export interface Candidate {
   urlKey: string; url: string; finalUrl: string; title: string; description: string; text: string; host: string; canonicalKey: string | null;
-  fetchedAt: number; lastChangedAt: number; ftsScore: number; httpStatus: number;
+  fetchedAt: number; lastChangedAt: number; ftsScore: number; httpStatus: number; lowValue: boolean;
 }
 export interface LinkInput { key: string; url: string; host: string }
 
@@ -48,15 +50,15 @@ export class DocumentStore {
     const byHash = this.db.prepare('SELECT url_key FROM documents WHERE content_sha256=? AND url_key<>? AND duplicate_of IS NULL ORDER BY fetched_at, url_key LIMIT 1').get(doc.contentSha256, doc.urlKey) as { url_key: string } | undefined;
     const byCanonical = canonicalKey === null ? undefined : this.db.prepare('SELECT url_key FROM documents WHERE url_key=? AND duplicate_of IS NULL AND (canonical_key IS NULL OR canonical_key<>?)').get(canonicalKey, doc.urlKey) as { url_key: string } | undefined;
     const original = byCanonical?.url_key ?? byHash?.url_key;
-    this.db.prepare(`INSERT INTO documents (url_key,url,final_url,title,description,canonical_url,language,text,content_sha256,fetched_at,http_status,duplicate_of,canonical_key,host,first_seen_at,last_changed_at,change_count)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)
+    this.db.prepare(`INSERT INTO documents (url_key,url,final_url,title,description,canonical_url,language,text,content_sha256,fetched_at,http_status,duplicate_of,canonical_key,host,first_seen_at,last_changed_at,change_count,low_value)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)
       ON CONFLICT(url_key) DO UPDATE SET url=excluded.url, final_url=excluded.final_url, title=excluded.title, description=excluded.description, canonical_url=excluded.canonical_url,
         language=excluded.language, text=excluded.text, content_sha256=excluded.content_sha256, fetched_at=excluded.fetched_at, http_status=excluded.http_status, duplicate_of=excluded.duplicate_of,
-        canonical_key=excluded.canonical_key, host=excluded.host,
+        canonical_key=excluded.canonical_key, host=excluded.host, low_value=excluded.low_value,
         last_changed_at=CASE WHEN ? THEN excluded.fetched_at ELSE COALESCE(documents.last_changed_at, excluded.fetched_at) END,
         change_count=documents.change_count + CASE WHEN ? AND ? THEN 1 ELSE 0 END`)
       .run(doc.urlKey, doc.url, doc.finalUrl, doc.title, doc.description, doc.canonicalUrl, doc.language, doc.text, doc.contentSha256, doc.fetchedAt, doc.httpStatus, original ?? null,
-        canonicalKey, host, previous?.first_seen_at ?? doc.fetchedAt, doc.fetchedAt, changed ? 1 : 0, changed ? 1 : 0, previous === undefined ? 0 : 1);
+        canonicalKey, host, previous?.first_seen_at ?? doc.fetchedAt, doc.fetchedAt, doc.lowValue ? 1 : 0, changed ? 1 : 0, changed ? 1 : 0, previous === undefined ? 0 : 1);
     if (original) { this.unindex(doc.urlKey); return { duplicateOf: original, changed, firstSeen: previous === undefined }; }
     this.index(doc.urlKey, doc.title, doc.description, doc.text);
     this.absorbCanonicalDuplicates(doc.urlKey);
@@ -127,10 +129,10 @@ export class DocumentStore {
     // Rank first, join after: the best `limit` full-text rows are picked by bm25 alone, and only those are joined to their pages. Joining first read a page row for every
     // page matching a common word (tens of thousands) just to throw all but `limit` of them away.
     const rows = this.db.prepare(`SELECT d.url_key AS urlKey, d.url AS url, d.final_url AS finalUrl, d.title AS title, d.description AS description, d.text AS text, COALESCE(d.host,'') AS host,
-        d.canonical_key AS canonicalKey, d.fetched_at AS fetchedAt, COALESCE(d.last_changed_at, d.fetched_at) AS lastChangedAt, d.http_status AS httpStatus, f.ftsScore AS ftsScore
+        d.canonical_key AS canonicalKey, d.fetched_at AS fetchedAt, COALESCE(d.last_changed_at, d.fetched_at) AS lastChangedAt, d.http_status AS httpStatus, d.low_value AS lowValue, f.ftsScore AS ftsScore
       FROM (SELECT url_key, bm25(docs_fts, 0.0, 5.0, 2.0, 1.0) AS ftsScore FROM docs_fts WHERE docs_fts MATCH ? ORDER BY ftsScore, url_key LIMIT ?) f
       JOIN documents d ON d.url_key = f.url_key WHERE d.duplicate_of IS NULL ORDER BY f.ftsScore, d.url_key`).all(match, Math.min(Math.max(1, limit), 500)) as unknown as Candidate[];
-    return rows.map(r => ({ ...r, fetchedAt: Number(r.fetchedAt), lastChangedAt: Number(r.lastChangedAt), ftsScore: Number(r.ftsScore), httpStatus: Number(r.httpStatus) }));
+    return rows.map(r => ({ ...r, fetchedAt: Number(r.fetchedAt), lastChangedAt: Number(r.lastChangedAt), ftsScore: Number(r.ftsScore), httpStatus: Number(r.httpStatus), lowValue: Number(r.lowValue) === 1 }));
   }
 
   get(key: string): { url: string; title: string; contentSha256: string; fetchedAt: number; lastChangedAt: number; changeCount: number; duplicateOf: string | null } | undefined {
