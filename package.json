@@ -15,11 +15,13 @@
     "test": "npm run build && node --test --test-concurrency=1 --test-timeout=240000 \"dist/tests/*.test.js\"",
     "start": "node dist/src/main.js",
     "serve": "node dist/src/main.js",
-    "crawl": "node dist/src/crawl.js"
+    "crawl": "node dist/src/crawl.js",
+    "frontier": "node dist/src/frontier-cli.js"
   },
   "dependencies": {
     "@privanet/protocol": "0.3.0-alpha.5",
     "@privanet/sdk": "0.3.0-alpha.5",
+    "tldts": "7.4.16",
     "zod": "^4.6.5"
   },
   "devDependencies": {
