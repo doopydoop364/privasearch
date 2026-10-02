@@ -1,5 +1,7 @@
 import { PrivaNetClient } from '@privanet/sdk';
+import { parseFamilies } from './domain.js';
 import type { FrontierOptions } from './frontier.js';
+import { resolvePolicy } from './policy-options.js';
 
 /**
  * Configuration for the long-running service, from environment variables only. Credentials are never accepted on the command line (they would
@@ -62,6 +64,7 @@ export function parseServiceConfig(env: Record<string, string | undefined>, seed
     recrawlMs: ms('PRIVASEARCH_RECRAWL_MS', 7 * 86400000, 60000, 365 * 86400000), recrawlMinMs: ms('PRIVASEARCH_RECRAWL_MIN_MS', 6 * 3600000, 60000, 365 * 86400000),
     recrawlMaxMs: ms('PRIVASEARCH_RECRAWL_MAX_MS', 60 * 86400000, 60000, 3650 * 86400000),
   };
+  Object.assign(frontier, parsePolicy(env));
   if ((frontier.recrawlMinMs ?? 0) > (frontier.recrawlMaxMs ?? 0)) throw new ConfigError(['PRIVASEARCH_RECRAWL_MIN_MS', 'PRIVASEARCH_RECRAWL_MAX_MS'], 'PRIVASEARCH_RECRAWL_MIN_MS must not exceed PRIVASEARCH_RECRAWL_MAX_MS');
   return {
     dbPath: env.PRIVASEARCH_DB ?? './var/privasearch.sqlite', host, port: integer('PRIVASEARCH_PORT', env.PRIVASEARCH_PORT, 4020, 0, 65535), ...(apiToken ? { apiToken } : {}),
@@ -70,4 +73,40 @@ export function parseServiceConfig(env: Record<string, string | undefined>, seed
       maxCandidates: ms('PRIVASEARCH_DEMAND_MAX_CANDIDATES', 12, 1, 100), maxPendingDemand: ms('PRIVASEARCH_DEMAND_MAX_PENDING', 300, 1, 100000), maxQueriesPerHour: ms('PRIVASEARCH_DEMAND_MAX_PER_HOUR', 30, 1, 100000) },
     shutdownMs: ms('PRIVASEARCH_SHUTDOWN_MS', 15000, 0, 300000), progressMs: ms('PRIVASEARCH_PROGRESS_MS', 60000, 1000, 3600000),
   };
+}
+
+/**
+ * The crawl-quality settings (docs/crawl-quality.md). Each is validated by name here, so a typo is reported as the setting that holds it, never as a value;
+ * the cross-field rules live in resolvePolicy and are reported against the settings they involve.
+ */
+function parsePolicy(env: Record<string, string | undefined>): FrontierOptions {
+  const int = (name: string, fallback: number | undefined, min: number, max: number): number | undefined => (env[name] === undefined || env[name] === '' ? fallback : integer(name, env[name], 0, min, max));
+  const out: FrontierOptions = {};
+  const set = <K extends keyof FrontierOptions>(key: K, value: FrontierOptions[K]) => { if (value !== undefined) out[key] = value; };
+  set('maxPendingPerDomain', int('PRIVASEARCH_MAX_PENDING_PER_DOMAIN', undefined, 1, 10_000_000)); set('maxPendingPerFamily', int('PRIVASEARCH_MAX_PENDING_PER_FAMILY', undefined, 1, 10_000_000));
+  set('maxPendingTotal', int('PRIVASEARCH_MAX_PENDING_TOTAL', undefined, 1, 100_000_000)); set('domainConcurrency', int('PRIVASEARCH_DOMAIN_CONCURRENCY', undefined, 1, 64));
+  set('familyConcurrency', int('PRIVASEARCH_FAMILY_CONCURRENCY', undefined, 1, 256)); set('saturationPages', int('PRIVASEARCH_SATURATION_PAGES', undefined, 1, 10_000_000));
+  set('yieldHalfLifeMs', int('PRIVASEARCH_YIELD_HALF_LIFE_MS', undefined, 60000, 3650 * 86400000));
+  set('maxInternalLinksPerPage', int('PRIVASEARCH_MAX_INTERNAL_LINKS', undefined, 0, 100)); set('maxExternalLinksPerPage', int('PRIVASEARCH_MAX_EXTERNAL_LINKS', undefined, 0, 100));
+  set('maxSiblingLinksPerPage', int('PRIVASEARCH_MAX_SIBLING_LINKS', undefined, 0, 100)); set('externalBonus', int('PRIVASEARCH_EXTERNAL_BONUS', undefined, 0, 50)); set('relevanceBonus', int('PRIVASEARCH_RELEVANCE_BONUS', undefined, 0, 50));
+  if (env.PRIVASEARCH_MIN_DOMAIN_WEIGHT) { const w = Number(env.PRIVASEARCH_MIN_DOMAIN_WEIGHT); if (!(w > 0 && w <= 1)) throw new ConfigError(['PRIVASEARCH_MIN_DOMAIN_WEIGHT'], 'PRIVASEARCH_MIN_DOMAIN_WEIGHT must be above 0 and at most 1'); out.minWeight = w; }
+  if (env.PRIVASEARCH_EXPLORE_SHARES) {
+    const parts = env.PRIVASEARCH_EXPLORE_SHARES.split('/').map(Number);
+    if (parts.length !== 3 || parts.some(n => !Number.isInteger(n) || n < 0 || n > 100) || parts[0]! + parts[1]! + parts[2]! !== 100) throw new ConfigError(['PRIVASEARCH_EXPLORE_SHARES'], 'PRIVASEARCH_EXPLORE_SHARES must be three whole percentages totalling 100, for example 70/20/10 (exploit/explore/wildcard)');
+    out.explore = { exploit: parts[0]!, explore: parts[1]!, wildcard: parts[2]! };
+  }
+  if (env.PRIVASEARCH_LANGUAGES) {
+    const list = env.PRIVASEARCH_LANGUAGES.split(',').map(l => l.trim().toLowerCase()).filter(Boolean);
+    if (list.length === 0 || list.some(l => l !== '*' && !/^[a-z]{2,3}$/.test(l))) throw new ConfigError(['PRIVASEARCH_LANGUAGES'], 'PRIVASEARCH_LANGUAGES must be a comma-separated list of language codes such as en,de, or *');
+    out.preferredLanguages = list;
+  }
+  if (env.PRIVASEARCH_LANGUAGE_MODE) { if (env.PRIVASEARCH_LANGUAGE_MODE !== 'filter' && env.PRIVASEARCH_LANGUAGE_MODE !== 'deprioritize') throw new ConfigError(['PRIVASEARCH_LANGUAGE_MODE'], 'PRIVASEARCH_LANGUAGE_MODE must be filter or deprioritize'); out.languageMode = env.PRIVASEARCH_LANGUAGE_MODE; }
+  if (env.PRIVASEARCH_TRACKING_PARAMS) {
+    const list = env.PRIVASEARCH_TRACKING_PARAMS.split(',').map(p => p.trim().toLowerCase()).filter(Boolean);
+    if (list.some(p => !/^[a-z0-9_.-]{1,40}$/.test(p))) throw new ConfigError(['PRIVASEARCH_TRACKING_PARAMS'], 'PRIVASEARCH_TRACKING_PARAMS must be a comma-separated list of parameter names'); out.trackingParams = list;
+  }
+  if (env.PRIVASEARCH_DOMAIN_FAMILIES) { try { out.families = parseFamilies(env.PRIVASEARCH_DOMAIN_FAMILIES); } catch { throw new ConfigError(['PRIVASEARCH_DOMAIN_FAMILIES'], 'PRIVASEARCH_DOMAIN_FAMILIES must look like family=domain.org,other.org;family2=third.org, with no domain in two families'); } }
+  try { resolvePolicy(out); }
+  catch (error) { throw new ConfigError(['PRIVASEARCH_MAX_PENDING_PER_DOMAIN', 'PRIVASEARCH_MAX_PENDING_PER_FAMILY'], error instanceof RangeError ? error.message : 'invalid crawl-quality settings'); }
+  return out;
 }

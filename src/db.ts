@@ -76,6 +76,9 @@ CREATE INDEX IF NOT EXISTS domains_young ON domains(vtime) WHERE pending > 0 AND
 CREATE INDEX IF NOT EXISTS domains_family ON domains(family);
 CREATE TABLE IF NOT EXISTS states (state TEXT PRIMARY KEY, n INTEGER NOT NULL DEFAULT 0) STRICT, WITHOUT ROWID;
 INSERT OR IGNORE INTO states (state, n) VALUES ('PENDING',0),('IN_FLIGHT',0),('DONE',0),('BLOCKED',0),('FAILED',0),('PENDING_DEMAND',0),('URLS',0);
+-- Store-wide counts (pages, duplicates, indexed pages, link rows), exact and O(1) for /health and /status.
+CREATE TABLE IF NOT EXISTS counts (k TEXT PRIMARY KEY, n INTEGER NOT NULL DEFAULT 0) STRICT, WITHOUT ROWID;
+INSERT OR IGNORE INTO counts (k, n) VALUES ('documents',0),('duplicates',0),('indexed',0),('links',0);
 -- Distinct (linking domain, linked domain) pairs: authority counts independent domains, never raw link volume.
 CREATE TABLE IF NOT EXISTS domain_links (src_domain TEXT NOT NULL, dst_domain TEXT NOT NULL, PRIMARY KEY (src_domain, dst_domain)) STRICT, WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS urls_domain_pending ON urls(domain, queue, priority DESC, next_at) WHERE state='PENDING';
@@ -103,6 +106,19 @@ CREATE TRIGGER IF NOT EXISTS urls_count_update AFTER UPDATE OF state, queue ON u
   UPDATE states SET n = n - 1 WHERE state = 'PENDING_DEMAND' AND OLD.state='PENDING' AND OLD.queue='DEMAND';
   UPDATE states SET n = n + 1 WHERE state = 'PENDING_DEMAND' AND NEW.state='PENDING' AND NEW.queue='DEMAND';
 END;
+CREATE TRIGGER IF NOT EXISTS documents_count_insert AFTER INSERT ON documents BEGIN
+  UPDATE counts SET n = n + 1 WHERE k = 'documents'; UPDATE counts SET n = n + 1 WHERE k = 'duplicates' AND NEW.duplicate_of IS NOT NULL;
+END;
+CREATE TRIGGER IF NOT EXISTS documents_count_delete AFTER DELETE ON documents BEGIN
+  UPDATE counts SET n = n - 1 WHERE k = 'documents'; UPDATE counts SET n = n - 1 WHERE k = 'duplicates' AND OLD.duplicate_of IS NOT NULL;
+END;
+CREATE TRIGGER IF NOT EXISTS documents_count_update AFTER UPDATE OF duplicate_of ON documents WHEN (OLD.duplicate_of IS NULL) <> (NEW.duplicate_of IS NULL) BEGIN
+  UPDATE counts SET n = n + (NEW.duplicate_of IS NOT NULL) - (OLD.duplicate_of IS NOT NULL) WHERE k = 'duplicates';
+END;
+CREATE TRIGGER IF NOT EXISTS docs_index_count_insert AFTER INSERT ON docs_index BEGIN UPDATE counts SET n = n + 1 WHERE k = 'indexed'; END;
+CREATE TRIGGER IF NOT EXISTS docs_index_count_delete AFTER DELETE ON docs_index BEGIN UPDATE counts SET n = n - 1 WHERE k = 'indexed'; END;
+CREATE TRIGGER IF NOT EXISTS links_count_insert AFTER INSERT ON links BEGIN UPDATE counts SET n = n + 1 WHERE k = 'links'; END;
+CREATE TRIGGER IF NOT EXISTS links_count_delete AFTER DELETE ON links BEGIN UPDATE counts SET n = n - 1 WHERE k = 'links'; END;
 CREATE TRIGGER IF NOT EXISTS urls_count_delete AFTER DELETE ON urls WHEN OLD.domain IS NOT NULL BEGIN
   UPDATE hosts SET urls = urls - 1 WHERE host = OLD.host;
   UPDATE domains SET urls = urls - 1, pending = pending - (OLD.state='PENDING'), pending_demand = pending_demand - (OLD.state='PENDING' AND OLD.queue='DEMAND'),
@@ -127,7 +143,9 @@ export function rebuildCounters(db: DatabaseSync, familyOf: (domain: string) => 
       WHERE domains.domain = c.domain;
     UPDATE states SET n = (SELECT COUNT(*) FROM urls WHERE state = states.state) WHERE state IN ('PENDING','IN_FLIGHT','DONE','BLOCKED','FAILED');
     UPDATE states SET n = (SELECT COUNT(*) FROM urls) WHERE state='URLS';
-    UPDATE states SET n = (SELECT COUNT(*) FROM urls WHERE state='PENDING' AND queue='DEMAND') WHERE state='PENDING_DEMAND';`);
+    UPDATE states SET n = (SELECT COUNT(*) FROM urls WHERE state='PENDING' AND queue='DEMAND') WHERE state='PENDING_DEMAND';
+    UPDATE counts SET n = CASE k WHEN 'documents' THEN (SELECT COUNT(*) FROM documents) WHEN 'duplicates' THEN (SELECT COUNT(*) FROM documents WHERE duplicate_of IS NOT NULL)
+      WHEN 'indexed' THEN (SELECT COUNT(*) FROM docs_index) WHEN 'links' THEN (SELECT COUNT(*) FROM links) ELSE n END;`);
   for (const row of db.prepare(`SELECT domain FROM domains WHERE family=''`).all() as Array<{ domain: string }>) db.prepare('UPDATE domains SET family=? WHERE domain=?').run(familyOf(row.domain), row.domain);
 }
 

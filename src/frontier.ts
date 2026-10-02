@@ -9,7 +9,7 @@ import type { TrapReason } from './policy.js';
 import { resolvePolicy } from './policy-options.js';
 import type { CrawlPolicyOptions, ResolvedCrawlPolicy } from './policy-options.js';
 import { domainWeight, priorityOf } from './scoring.js';
-import type { DomainCounters, UrlSource } from './scoring.js';
+import type { DomainCounters, PriorityBreakdown, UrlSource } from './scoring.js';
 import { parseCrawlUrl, urlKey } from './url.js';
 import type { UrlRejection } from './url.js';
 
@@ -27,6 +27,8 @@ import type { UrlRejection } from './url.js';
 export interface FrontierOptions extends CrawlPolicyOptions {
   /** Operator-defined groups of related registrable domains (family name -> domains). Never guessed. */
   families?: Record<string, string[]>;
+  /** Read-only inspection (explain, analysis): the schema is neither created nor migrated and nothing is written. Use only with a database opened read-only. */
+  readOnly?: boolean;
   hostDelayMs?: number; maxAttempts?: number; backoffBaseMs?: number; maxBackoffMs?: number;
   /** The first recrawl interval after a URL is fetched for the first time. */
   recrawlMs?: number; recrawlMinMs?: number; recrawlMaxMs?: number; importantRecrawlMaxMs?: number;
@@ -40,6 +42,16 @@ export interface Leased { urlKey: string; url: string; host: string; queue: Queu
 export type AddResult = 'ADDED' | 'EXISTS' | UrlRejection | 'TOO_DEEP' | 'HOST_BUDGET' | 'DOMAIN_BUDGET' | 'FAMILY_BUDGET' | 'GLOBAL_BUDGET' | 'LOW_VALUE' | 'LANGUAGE_FILTERED' | `TRAP:${TrapReason}`;
 /** Why a discovered link was or was not admitted, as counted since process start (`Frontier.admission`). */
 export type AdmissionReason = 'ADDED' | 'EXISTS' | 'REJECTED_URL' | 'TOO_DEEP' | 'HOST_BUDGET' | 'DOMAIN_BUDGET' | 'FAMILY_BUDGET' | 'GLOBAL_BUDGET' | 'LOW_VALUE' | 'LANGUAGE_FILTERED' | 'TRAP';
+export interface Concentration {
+  /** Share of the PENDING frontier (and of everything already crawled) held by the largest domain, the five largest, and the Herfindahl index (1 = one domain; 1/n = n equal domains). */
+  pending: { total: number; top1: number; top5: number; herfindahl: number; effectiveDomains: number; topDomain: string | null };
+  crawled: { total: number; top1: number; top5: number; herfindahl: number; effectiveDomains: number; topDomain: string | null };
+  warnings: string[];
+}
+export interface AddOptions { queue: Queue; priority?: number; depth?: number; source?: Source; external?: boolean; relevant?: boolean }
+export interface Evaluation {
+  verdict: AddResult | 'WOULD_ADD'; parsed?: { url: string; host: string; origin: string }; source: Source; priority: PriorityBreakdown; domain: string; languageHint: string | undefined; knownPriority?: number;
+}
 export type State = 'PENDING' | 'IN_FLIGHT' | 'DONE' | 'BLOCKED' | 'FAILED';
 export type Source = UrlSource;
 export interface UrlRow { url_key: string; url: string; host: string; queue: Queue; priority: number; state: State; generation: number; attempts: number; next_at: number; depth: number; last_outcome: string | null; last_http: number | null; etag: string | null; last_modified: string | null; content_sha256: string | null; fetched_at: number | null; leased_at: number | null; interval_ms: number | null; change_count: number; unchanged_streak: number; last_changed_at: number | null; domain: string | null; source: Source; external: number }
@@ -48,20 +60,20 @@ const DAY = 86400000;
 const HOUR = 3600000;
 
 export class Frontier {
-  private readonly o: Required<Omit<FrontierOptions, keyof CrawlPolicyOptions | 'families'>>;
+  private readonly o: Required<Omit<FrontierOptions, keyof CrawlPolicyOptions | 'families' | 'readOnly'>>;
   readonly policy: ResolvedCrawlPolicy; readonly model: DomainModel;
   /** Admission outcomes since this process started (the persistent record is the frontier itself). */
   readonly admission: Record<AdmissionReason, number> = { ADDED: 0, EXISTS: 0, REJECTED_URL: 0, TOO_DEEP: 0, HOST_BUDGET: 0, DOMAIN_BUDGET: 0, FAMILY_BUDGET: 0, GLOBAL_BUDGET: 0, LOW_VALUE: 0, LANGUAGE_FILTERED: 0, TRAP: 0 };
   /** Position in the 100-slot exploit/explore/wildcard cycle, and the golden-ratio sequence that spreads wildcard picks over the fair-share order. */
-  private classTurn = 0; private wildcardTurn = 0; private detailCache: { at: number; recrawlDue: number; hosts: number; domains: number } | undefined;
+  private classTurn = 0; private wildcardTurn = 0; private detailCache: { at: number; recrawlDue: number; hosts: number; domains: number } | undefined; private concentrationCache: { at: number; value: Concentration } | undefined;
   /** Single-slot leases alternate between new and recrawl work in a fixed pattern (one in four is a recrawl) so the share holds for limit 1 too. */
   private singleSlotTurn = 0;
   constructor(private readonly db: DatabaseSync, options: FrontierOptions = {}) {
-    const { families, domainModel, ...rest } = options as FrontierOptions & { domainModel?: DomainModel };
+    const { families, domainModel, readOnly, ...rest } = options as FrontierOptions & { domainModel?: DomainModel };
     this.policy = resolvePolicy(rest); this.model = domainModel ?? new DomainModel(families ?? {});
     this.o = { hostDelayMs: 2000, maxAttempts: 5, backoffBaseMs: 60000, maxBackoffMs: 6 * HOUR, recrawlMs: 7 * DAY, recrawlMinMs: 6 * HOUR, recrawlMaxMs: 60 * DAY, importantRecrawlMaxMs: 14 * DAY,
       goneRecheckMs: 30 * DAY, failedRecheckMs: 30 * DAY, staleLeaseMs: 300000, maxDepth: 8, maxUrlsPerHost: 2000, recrawlShare: 0.25, ...Object.fromEntries(Object.entries(rest).filter(([k, v]) => v !== undefined && !(k in this.policy))) };
-    initSchema(db); this.syncFamilies(families ?? {});
+    if (!readOnly) { initSchema(db); this.syncFamilies(families ?? {}); }
   }
   /** Makes the stored family of every domain match the configuration (a domain not listed is its own family), so adding or removing a group takes effect at the next start. */
   private syncFamilies(groups: Record<string, string[]>): void {
@@ -84,7 +96,7 @@ export class Frontier {
       .run(domain, this.model.familyOfDomain(domain), now, Math.max(0, 100 - priority));
   }
 
-  add(raw: string, options: { queue: Queue; priority?: number; depth?: number; source?: Source; external?: boolean; relevant?: boolean }, now: number): AddResult {
+  add(raw: string, options: AddOptions, now: number): AddResult {
     const result = this.admit(raw, options, now);
     this.count(result === 'ADDED' || result === 'EXISTS' || result === 'TOO_DEEP' || result === 'HOST_BUDGET' || result === 'DOMAIN_BUDGET' || result === 'FAMILY_BUDGET' || result === 'GLOBAL_BUDGET' || result === 'LOW_VALUE' || result === 'LANGUAGE_FILTERED' ? result : result.startsWith('TRAP:') ? 'TRAP' : 'REJECTED_URL');
     return result;
@@ -97,43 +109,61 @@ export class Frontier {
    * Steps 4-10 apply to DISCOVERED links only: a seed, a redirect target, a sitemap/provider candidate or an explicit demand request is never judged by them.
    * Counts come from trigger-maintained counters, never from scanning `urls`.
    */
-  private admit(raw: string, options: { queue: Queue; priority?: number; depth?: number; source?: Source; external?: boolean; relevant?: boolean }, now: number): AddResult {
-    const parsed = parseCrawlUrl(raw, undefined, this.policy.trackingParams); if (!parsed.ok) return parsed.reason;
-    const depth = options.depth ?? 0; if (depth > this.o.maxDepth) return 'TOO_DEEP';
-    const key = urlKey(parsed.url); const discovered = options.source === 'discovered';
-    const source: Source = options.source ?? (options.queue === 'DEMAND' ? 'demand' : 'seed');
-    const known = this.db.prepare('SELECT queue, priority FROM urls WHERE url_key=?').get(key) as { queue: Queue; priority: number } | undefined;
-    const hint = urlLanguageHint(parsed.url); const hintAllowed = languagePreferred(hint, this.policy.preferredLanguages);
-    // A caller that names neither a priority nor a source gets 0 (an operator-added URL); one that names a source gets that source's scored priority.
-    const priority = options.priority ?? (options.source === undefined ? 0 : priorityOf({ source, depth, external: options.external ?? false, relevant: options.relevant ?? false, languageHintAllowed: hintAllowed, hasQuery: parsed.url.includes('?') }, this.policy).total);
-    if (known) {
+  private admit(raw: string, options: AddOptions, now: number): AddResult {
+    const e = this.evaluate(raw, options);
+    if (e.verdict === 'EXISTS' && e.parsed) {
+      const key = urlKey(e.parsed.url); const source = e.source;
       // Demand promotes a URL already known as public work, so explicit user demand is never queued behind discovery; a better priority is kept.
       if (options.queue === 'DEMAND') {
-        this.db.prepare(`UPDATE urls SET queue='DEMAND', source='demand', priority=MAX(priority, ?) WHERE url_key=? AND state='PENDING'`).run(priority, key);
+        this.db.prepare(`UPDATE urls SET queue='DEMAND', source='demand', priority=MAX(priority, ?) WHERE url_key=? AND state='PENDING'`).run(e.priority.total, key);
         // Due now, unless it is waiting out a failure backoff: demand never turns repeated searches into repeated hits on a failing URL.
         this.db.prepare(`UPDATE urls SET next_at=MIN(next_at, ?) WHERE url_key=? AND state='PENDING' AND attempts=0`).run(now, key);
       }
-      else if (source === 'seed') this.db.prepare(`UPDATE urls SET source='seed', priority=MAX(priority, ?) WHERE url_key=?`).run(priority, key); // seeds are re-marked at every start, so they stay protected from pruning
-      else if (priority > known.priority) this.db.prepare(`UPDATE urls SET priority=? WHERE url_key=?`).run(priority, key);
+      else if (source === 'seed') this.db.prepare(`UPDATE urls SET source='seed', priority=MAX(priority, ?) WHERE url_key=?`).run(e.priority.total, key); // seeds are re-marked at every start, so they stay protected from pruning
+      else if (e.priority.total > (e.knownPriority ?? 0)) this.db.prepare(`UPDATE urls SET priority=? WHERE url_key=?`).run(e.priority.total, key);
       return 'EXISTS';
     }
-    const domain = this.model.domainOf(parsed.host);
-    if (discovered) {
-      if (lowValueUrl(parsed.url)) return 'LOW_VALUE';
-      if (!hintAllowed && this.policy.languageMode === 'filter') return 'LANGUAGE_FILTERED';
-      const trap = crawlTrap(parsed.url); if (trap) return `TRAP:${trap}`;
-      const host = this.db.prepare('SELECT urls FROM hosts WHERE host=?').get(parsed.host) as { urls: number } | undefined;
-      if (Number(host?.urls ?? 0) >= this.o.maxUrlsPerHost) return 'HOST_BUDGET';
-      const dom = this.db.prepare('SELECT pending FROM domains WHERE domain=?').get(domain) as { pending: number } | undefined;
-      if (Number(dom?.pending ?? 0) >= this.policy.maxPendingPerDomain) return 'DOMAIN_BUDGET';
-      const family = this.model.familyOfDomain(domain);
-      if (family !== domain && Number((this.db.prepare('SELECT COALESCE(SUM(pending),0) AS n FROM domains WHERE family=?').get(family) as { n: number }).n) >= this.policy.maxPendingPerFamily) return 'FAMILY_BUDGET';
-      if (Number((this.db.prepare(`SELECT n FROM states WHERE state='PENDING'`).get() as { n: number }).n) >= this.policy.maxPendingTotal) return 'GLOBAL_BUDGET';
-    }
-    this.ensureDomain(domain, priority, now);
+    if (e.verdict !== 'WOULD_ADD' || !e.parsed) return e.verdict as AddResult;
+    this.ensureDomain(e.domain, e.priority.total, now);
     this.db.prepare(`INSERT OR IGNORE INTO urls (url_key, url, host, domain, queue, priority, state, next_at, depth, discovered_at, source, external) VALUES (?,?,?,?,?,?, 'PENDING', ?, ?, ?, ?, ?)`)
-      .run(key, parsed.url, parsed.host, domain, options.queue, priority, now, depth, now, source, options.external ? 1 : 0);
+      .run(urlKey(e.parsed.url), e.parsed.url, e.parsed.host, e.domain, options.queue, e.priority.total, now, options.depth ?? 0, now, e.source, options.external ? 1 : 0);
     return 'ADDED';
+  }
+
+  /**
+   * Admission BEFORE insertion, as a pure read. Order, cheapest first; a URL stops at the first refusal and nothing is written for it:
+   *   1 URL policy  2 depth  3 already known  4 non-content URL (LOW_VALUE)  5 language hint (LANGUAGE_FILTERED, 'filter' mode)
+   *   6 crawl trap  7 host budget  8 domain pending budget  9 family pending budget  10 global pending budget
+   * Steps 4-10 apply to DISCOVERED links only: a seed, a redirect target, a sitemap/provider candidate or an explicit demand request is never judged by them.
+   * Counts come from trigger-maintained counters, never from scanning `urls`. `frontier explain` calls this for a URL the frontier has never seen.
+   */
+  evaluate(raw: string, options: AddOptions): Evaluation {
+    const none = { total: 0, base: 0, external: 0, relevance: 0, language: 0, query: 0 };
+    const parsed = parseCrawlUrl(raw, undefined, this.policy.trackingParams);
+    if (!parsed.ok) return { verdict: parsed.reason, source: options.source ?? 'seed', priority: none, domain: '', languageHint: undefined };
+    const depth = options.depth ?? 0; const discovered = options.source === 'discovered';
+    const source: Source = options.source ?? (options.queue === 'DEMAND' ? 'demand' : 'seed');
+    const domain = this.model.domainOf(parsed.host); const hint = urlLanguageHint(parsed.url); const hintAllowed = languagePreferred(hint, this.policy.preferredLanguages);
+    // A caller that names neither a priority nor a source gets 0 (an operator-added URL); one that names a source gets that source's scored priority.
+    const breakdown = options.priority !== undefined ? { ...none, total: options.priority, base: options.priority }
+      : options.source === undefined ? none : priorityOf({ source, depth, external: options.external ?? false, relevant: options.relevant ?? false, languageHintAllowed: hintAllowed, hasQuery: parsed.url.includes('?') }, this.policy);
+    const out = (verdict: Evaluation['verdict'], extra: Partial<Evaluation> = {}): Evaluation => ({ verdict, parsed, source, priority: breakdown, domain, languageHint: hint, ...extra });
+    if (depth > this.o.maxDepth) return out('TOO_DEEP');
+    const known = this.db.prepare('SELECT queue, priority FROM urls WHERE url_key=?').get(urlKey(parsed.url)) as { queue: Queue; priority: number } | undefined;
+    if (known) return out('EXISTS', { knownPriority: known.priority });
+    if (discovered) {
+      if (lowValueUrl(parsed.url)) return out('LOW_VALUE');
+      if (!hintAllowed && this.policy.languageMode === 'filter') return out('LANGUAGE_FILTERED');
+      const trap = crawlTrap(parsed.url); if (trap) return out(`TRAP:${trap}`);
+      const host = this.db.prepare('SELECT urls FROM hosts WHERE host=?').get(parsed.host) as { urls: number } | undefined;
+      if (Number(host?.urls ?? 0) >= this.o.maxUrlsPerHost) return out('HOST_BUDGET');
+      const dom = this.db.prepare('SELECT pending FROM domains WHERE domain=?').get(domain) as { pending: number } | undefined;
+      if (Number(dom?.pending ?? 0) >= this.policy.maxPendingPerDomain) return out('DOMAIN_BUDGET');
+      const family = this.model.familyOfDomain(domain);
+      if (family !== domain && Number((this.db.prepare('SELECT COALESCE(SUM(pending),0) AS n FROM domains WHERE family=?').get(family) as { n: number }).n) >= this.policy.maxPendingPerFamily) return out('FAMILY_BUDGET');
+      if (Number((this.db.prepare(`SELECT n FROM states WHERE state='PENDING'`).get() as { n: number }).n) >= this.policy.maxPendingTotal) return out('GLOBAL_BUDGET');
+    }
+    return out('WOULD_ADD');
   }
 
   /** Whether the domain (and its family) may start one more request: concurrency caps per domain and per family. Reads the trigger-maintained counters, so it also sees leases made earlier in this call. */
@@ -365,5 +395,25 @@ export class Frontier {
   noteDomainLink(srcDomain: string, dstDomain: string): void {
     if (srcDomain === dstDomain) return;
     if (Number(this.db.prepare('INSERT OR IGNORE INTO domain_links (src_domain, dst_domain) VALUES (?,?)').run(srcDomain, dstDomain).changes) > 0) this.db.prepare('UPDATE domains SET ref_domains = ref_domains + 1 WHERE domain=?').run(dstDomain);
+  }
+
+  /**
+   * How concentrated the frontier and the crawl are, per registrable domain. One aggregate pass over `domains` (not `urls`), cached for 15 s, so a status page can show it
+   * on every poll. Warnings are plain sentences: they name a domain and a share, never a URL.
+   */
+  concentration(now: number): Concentration {
+    if (this.concentrationCache && Math.abs(now - this.concentrationCache.at) < 15000) return this.concentrationCache.value;
+    const measure = (column: 'pending' | 'done'): Concentration['pending'] => {
+      const rows = this.db.prepare(`SELECT domain, ${column} AS n FROM domains WHERE ${column} > 0 ORDER BY ${column} DESC, domain LIMIT 5`).all() as unknown as Array<{ domain: string; n: number }>;
+      const agg = this.db.prepare(`SELECT COALESCE(SUM(${column}),0) AS total, COALESCE(SUM(1.0 * ${column} * ${column}),0) AS squares FROM domains WHERE ${column} > 0`).get() as { total: number; squares: number };
+      const total = Number(agg.total); const hhi = total === 0 ? 0 : Number(agg.squares) / (total * total); const top = (n: number) => (total === 0 ? 0 : rows.slice(0, n).reduce((a, r) => a + Number(r.n), 0) / total);
+      const round = (x: number) => Math.round(x * 10000) / 10000;
+      return { total, top1: round(top(1)), top5: round(top(5)), herfindahl: round(hhi), effectiveDomains: hhi === 0 ? 0 : round(1 / hhi), topDomain: rows[0]?.domain ?? null };
+    };
+    const pending = measure('pending'); const crawled = measure('done'); const warnings: string[] = [];
+    if (pending.total >= 100 && pending.top1 >= 0.5 && pending.topDomain) warnings.push(`one domain (${pending.topDomain}) holds ${Math.round(pending.top1 * 100)}% of the pending frontier`);
+    if (pending.total >= 100 && pending.herfindahl >= 0.25) warnings.push(`the pending frontier is concentrated: it behaves like ${pending.effectiveDomains} equally sized domains`);
+    if (crawled.total >= 100 && crawled.top1 >= 0.5 && crawled.topDomain) warnings.push(`one domain (${crawled.topDomain}) accounts for ${Math.round(crawled.top1 * 100)}% of crawled pages`);
+    const value = { pending, crawled, warnings }; this.concentrationCache = { at: now, value }; return value;
   }
 }

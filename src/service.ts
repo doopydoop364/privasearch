@@ -87,7 +87,7 @@ export async function startService(config: ServiceConfig, deps: ServiceDeps = {}
       crawling = false;
     })();
   }
-  const progress = setInterval(() => log({ event: 'service.progress', frontier: { ...frontier.stats(), ...frontier.detail(clock()) }, documents: documents.count(), links: documents.linkCount(), ...(planner ? { demand: planner.stats() } : {}) }), config.progressMs);
+  const progress = setInterval(() => log({ event: 'service.progress', frontier: { ...frontier.stats(), ...frontier.detail(clock()), concentration: logConcentration(frontier, clock()), admission: frontier.admission }, documents: documents.count(), links: documents.linkCount(), ...(planner ? { demand: planner.stats() } : {}) }), config.progressMs);
   progress.unref();
   log({ event: 'service.started', ...(version ? { version } : {}), host: config.host, port: address.port, crawling: crawler !== undefined, demand: planner !== undefined, authRequired: config.apiToken !== undefined,
     seedsAdded, seedsRejected, reclaimedLeases: reclaimed, documents: documents.count().indexed });
@@ -105,4 +105,10 @@ export async function startService(config: ServiceConfig, deps: ServiceDeps = {}
     log({ event: 'service.stopped' });
   })();
   return { port: address.port, host: config.host, documents, frontier, planner, crawler, searcher, stop };
+}
+
+/** The concentration figures for the log: numbers only. Domain names appear in the authenticated /status response, never in the log. */
+function logConcentration(frontier: Frontier, now: number): Record<string, unknown> {
+  const c = frontier.concentration(now); const strip = ({ topDomain, ...numbers }: typeof c.pending) => { void topDomain; return numbers; };
+  return { pending: strip(c.pending), crawled: strip(c.crawled), warnings: c.warnings.length };
 }

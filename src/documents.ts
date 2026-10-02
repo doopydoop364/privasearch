@@ -140,11 +140,14 @@ export class DocumentStore {
     return row as unknown as ReturnType<DocumentStore['get']>;
   }
 
+  /** Store-wide counts from trigger-maintained counters: exact, and O(1) however large the index is (they back /health and /status). */
   count(): { documents: number; indexed: number; duplicates: number } {
-    const n = (sql: string) => Number((this.db.prepare(sql).get() as { n: number }).n);
-    return { documents: n('SELECT COUNT(*) AS n FROM documents'), indexed: n('SELECT COUNT(*) AS n FROM docs_index'), duplicates: n('SELECT COUNT(*) AS n FROM documents WHERE duplicate_of IS NOT NULL') };
+    const c = this.counts(); return { documents: c.documents ?? 0, indexed: c.indexed ?? 0, duplicates: c.duplicates ?? 0 };
   }
-  /** Pages in the full-text index (what a search can find); one index scan, cheap enough to ask on every search. */
-  indexedCount(): number { return Number((this.db.prepare('SELECT COUNT(*) AS n FROM docs_index').get() as { n: number }).n); }
-  linkCount(): number { return Number((this.db.prepare('SELECT COUNT(*) AS n FROM links').get() as { n: number }).n); }
+  private counts(): Record<string, number> {
+    const out: Record<string, number> = {}; for (const row of this.db.prepare('SELECT k, n FROM counts').all() as unknown as Array<{ k: string; n: number }>) out[row.k] = Number(row.n); return out;
+  }
+  /** Pages in the full-text index (what a search can find). */
+  indexedCount(): number { return this.counts().indexed ?? 0; }
+  linkCount(): number { return this.counts().links ?? 0; }
 }
