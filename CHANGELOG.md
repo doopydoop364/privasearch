@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.5.1] - 2026-10-05
+
+### Fixed
+- Persistently zero-yield domains no longer retain exploration priority indefinitely. Persistent cooldowns, bounded discovery admission and serialized recovery probes reduce wasted scheduler opportunities; no site blacklist is introduced.
+- Retry delays account for the host failure streak so fresh sibling URLs cannot reset backoff. DEMAND retains priority and bypasses domain cooldown while obeying host backoff, politeness and attempt limits.
+
+### Added
+- Cached status metrics for queue health by DEMAND/PUBLIC, outcomes and typed errors, complete-hour throughput, retry ages, low/zero-yield domains, useful-page concentration and configured operator families.
+- Deterministic zero-yield and robots-failure simulations plus demand, family-accounting and crash/restart regression coverage.
+
+### Measurements and validation
+- In the controlled one-hour workload with eight uncrawlable domains, denied-robots wasted opportunities fell from 1,400 to 104 and useful pages rose from 400 to 1,696. Unavailable-robots waste fell from 480 to 48 and useful pages rose from 1,320 to 1,752. Existing four 600-fetch simulation outputs remain byte-identical.
+- All 185 local tests, lint/typecheck and five older-Core real-path compatibility tests passed. Local real-path tests used a loopback port remap because port 80 binding was unavailable. These results do not prove production domain crawlability or security.
+
+### Upgrade and compatibility
+- Back up SQLite before upgrade. Schema remains v4 with additive operational tables; existing URLs and index data are retained. Older writers ignore the new state, so avoid mixing old and new writers.
+- Search remains compatible with the pinned Core SDK/protocol. Core 0.4.0-alpha.3.1 adds robots diagnostics and roundup forwarding; update crawler nodes and restart the roundup adapter for full telemetry.
+- Operator families require configuration; yield is an indexing proxy rather than judged search relevance. Complete evidence and remaining risks: [crawler health audit](docs/crawler-health-audit.md).
+
 ## [0.5.0] - 2026-10-02
 
 Crawl quality: a frontier dominated by one giant site (Wikipedia and its language editions, about 18,000 pending URLs) now shares the crawl with independent sites. Schema version 4; **take a backup before first start** (a v4 database is not readable by 0.4.1). Core is unchanged. Details, formulas and measurements: [docs/crawl-quality.md](docs/crawl-quality.md).
