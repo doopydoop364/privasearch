@@ -1,5 +1,7 @@
 # Crawling
 
+The 2026-10 crawler hardening adds persistent zero-yield cooldowns, lease-bounded exploration, host-streak backoff and operational summaries. See [the audit and measured workloads](crawler-health-audit.md) for semantics, compatibility and limits.
+
 How PrivaSearch decides what to fetch, when, and how politely. All of this is PrivaSearch policy. **Every fetch, with no exception, goes through PrivaNet's `web.fetch.v1`**: PrivaSearch makes no HTTP request to a crawled URL, and there is no shortcut for a node on the same machine. robots.txt, redirects, size and content-type limits, and the SSRF guard are enforced by the node; PrivaSearch applies the policy on top and handles each outcome.
 
 ```text

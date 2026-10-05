@@ -1,0 +1,1 @@
+{"pending":100000,"insertPerSec":5318,"insertAvgMs":0.19,"leaseMsP50":4.18,"leaseMsP99":19.2,"leaseMsMax":19.45,"completeAvgMs":0.27,"leased":2400,"statsMs":0.53,"concentrationMs":3.04,"operationalHealthMs":79.77,"cachedOperationalHealthMs":0,"analyzeMs":117.93,"pruneDryRunMs":2210.98,"pruneCandidates":84002,"dbMB":36.7}

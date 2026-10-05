@@ -35,6 +35,8 @@ for (const n of sizes) {
     out.completeAvgMs = ms(completes.reduce((x, y) => x + y, 0) / Math.max(1, completes.length)); out.leased = leasedTotal;
     t = performance.now(); frontier.stats(); frontier.detail(now + 60000); out.statsMs = ms(performance.now() - t);
     t = performance.now(); frontier.concentration(now + 120000); out.concentrationMs = ms(performance.now() - t);
+    t = performance.now(); frontier.operationalHealth(now + 120000); out.operationalHealthMs = ms(performance.now() - t);
+    t = performance.now(); frontier.operationalHealth(now + 120001); out.cachedOperationalHealthMs = ms(performance.now() - t);
     db.close();
     t = performance.now(); analyzeFrontier(path); out.analyzeMs = ms(performance.now() - t);
     t = performance.now(); const report = prune(path, { now: now + 40 * 86400000, apply: false, keepPerDomain: 20 }); out.pruneDryRunMs = ms(performance.now() - t); out.pruneCandidates = report.candidates;

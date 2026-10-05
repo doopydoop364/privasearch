@@ -116,8 +116,9 @@ export class Crawler {
     const counted = { ...summary, discovered: 0, duplicates: 0, indexed: 0, trapped: 0, changed: 0 };
     try {
       this.o.frontier.atomically(() => {
+        const firstPage = this.o.frontier.get(item.urlKey)?.content_sha256 === null;
         this.o.frontier.complete(item.urlKey, result, now);
-        if (result.outcome === 'FETCHED' && result.page) this.ingest(item, result, counted);
+        if (result.outcome === 'FETCHED' && result.page) this.ingest(item, result, counted, firstPage);
         else if (result.outcome === 'HTTP_ERROR' && (result.httpStatus === 404 || result.httpStatus === 410)) this.o.documents.remove(item.urlKey);
       });
     } catch {
@@ -159,21 +160,21 @@ export class Crawler {
     }
   }
 
-  private ingest(item: Leased, result: FetchResult, summary: PassSummary): void {
+  private ingest(item: Leased, result: FetchResult, summary: PassSummary, firstPage: boolean): void {
     const page = result.page; if (!page) return;
     const frontier = this.o.frontier; const policy = frontier.policy; const now = this.clock();
     if (item.source === 'sitemap') { this.ingestSitemap(item, page.text ?? '', summary, now); return; } // a sitemap is a list of names, not a page: never indexed
     let stored: { duplicateOf?: string; changed: boolean } | undefined; let kind: 'useful' | 'duplicate' | 'low_value' | undefined;
     // A short "not found" page served with HTTP 200, or a page with almost nothing on it: kept (down-ranked, never deleted) and counted against its domain's yield.
     const lowValue = looksLikeSoft404(page.title ?? '', page.text ?? '', page.links.length) || looksThin(page.text ?? '', page.links.length);
-    if (result.indexing?.noindex) { this.o.documents.remove(item.urlKey); } // the site asked not to be indexed: drop anything held, and keep its links out of the graph
+    if (result.indexing?.noindex) { this.o.documents.remove(item.urlKey); frontier.recordPage(item.urlKey, 'low_value', now, firstPage); } // the site asked not to be indexed: drop anything held, and keep its links out of the graph
     else {
       stored = this.o.documents.upsert({
         urlKey: item.urlKey, url: item.url, finalUrl: result.finalUrl ?? item.url, title: page.title ?? '', description: page.description ?? '',
         canonicalUrl: page.canonicalUrl ?? null, language: page.language ?? null, text: page.text ?? '', contentSha256: result.contentSha256 ?? '', fetchedAt: result.fetchedAtMs, httpStatus: result.httpStatus ?? 200, lowValue });
       if (stored.duplicateOf) summary.duplicates++; else summary.indexed++;
       if (stored.changed && !stored.duplicateOf) summary.changed++;
-      kind = stored.duplicateOf ? 'duplicate' : lowValue ? 'low_value' : 'useful'; frontier.recordPage(item.urlKey, kind, now);
+      kind = stored.duplicateOf ? 'duplicate' : lowValue ? 'low_value' : 'useful'; frontier.recordPage(item.urlKey, kind, now, firstPage || kind === 'useful');
     }
     if (result.indexing?.nofollow) { if (stored) this.o.documents.setLinks(item.urlKey, item.host, []); return; }
     // Discovered links become public-queue work. Which links, and how many: see `chooseLinks`. Priorities are computed by the frontier from the link's facts.
