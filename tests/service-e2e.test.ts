@@ -51,6 +51,7 @@ test('PrivaProxy-shaped search -> demand crawl -> real node -> index -> better r
 
   // 1. A user searches an empty index: the answer is immediate, and demand crawling reaches the real node.
   const one = await startService(config({ seeds: ['http://crawl.example/seed'], frontier: { hostDelayMs: 50, backoffBaseMs: 200, recrawlMs: 2500, recrawlMinMs: 1000, recrawlMaxMs: 20000 } }), { log: () => undefined });
+  t.after(() => one.stop());
   const started = Date.now(); const first = await search(one, 'alpine hiking'); measured.firstAnswerMs = Date.now() - started;
   assert.deepEqual([first.total, first.index.state, first.crawl.triggered, first.crawl.state], [0, 'empty', true, 'scheduled']);
   await until('the first demand-crawled result', async () => (await search(one, 'alpine hiking')).total > 0); measured.firstResultMs = Date.now() - started;

@@ -63,6 +63,11 @@ const COLUMNS: Array<[table: string, column: string, ddl: string]> = [
 
 
 const TABLES_V4 = `
+-- Additive schema-4 extension: older readers ignore these operational tables.
+CREATE TABLE IF NOT EXISTS crawl_health (domain TEXT PRIMARY KEY, bad_streak INTEGER NOT NULL DEFAULT 0, cooldown_until INTEGER NOT NULL DEFAULT 0) STRICT;
+CREATE TABLE IF NOT EXISTS crawl_retries (url_key TEXT PRIMARY KEY, first_at INTEGER NOT NULL) STRICT;
+CREATE TABLE IF NOT EXISTS crawl_outcomes (queue TEXT NOT NULL, outcome TEXT NOT NULL, error TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY(queue,outcome,error)) STRICT, WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS crawl_hours (hour INTEGER NOT NULL, queue TEXT NOT NULL, answers INTEGER NOT NULL DEFAULT 0, fetched INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(hour,queue)) STRICT, WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS domains (
   domain TEXT PRIMARY KEY, family TEXT NOT NULL DEFAULT '', first_seen INTEGER NOT NULL DEFAULT 0,
   pending INTEGER NOT NULL DEFAULT 0, pending_demand INTEGER NOT NULL DEFAULT 0, in_flight INTEGER NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0,
@@ -87,6 +92,7 @@ CREATE INDEX IF NOT EXISTS urls_demand_domain ON urls(domain) WHERE source='dema
 `;
 // Triggers keep counters exact. They run inside the transaction of the statement that fires them.
 const TRIGGERS_V4 = `
+CREATE TRIGGER IF NOT EXISTS urls_retry_delete AFTER DELETE ON urls BEGIN DELETE FROM crawl_retries WHERE url_key=OLD.url_key; END;
 CREATE TRIGGER IF NOT EXISTS urls_count_insert AFTER INSERT ON urls WHEN NEW.domain IS NOT NULL BEGIN
   INSERT OR IGNORE INTO domains (domain, first_seen) VALUES (NEW.domain, NEW.discovered_at);
   INSERT OR IGNORE INTO hosts (host) VALUES (NEW.host);

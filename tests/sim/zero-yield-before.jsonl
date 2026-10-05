@@ -1,0 +1,3 @@
+{"badDomains":1,"outcome":"ROBOTS_DISALLOWED","hours":1,"attempts":1800,"wasted":724,"useful":1076,"pending":7924}
+{"badDomains":1,"outcome":"ROBOTS_UNAVAILABLE","hours":1,"attempts":1800,"wasted":60,"useful":1740,"pending":7260}{"badDomains":8,"outcome":"ROBOTS_DISALLOWED","hours":1,"attempts":18000,"wasted":14400,"useful":200,"pending":26400}
+{"badDomains":8,"outcome":"ROBOTS_UNAVAILABLE","hours":1,"attempts":4080,"wasted":480,"useful":200,"pending":26400}

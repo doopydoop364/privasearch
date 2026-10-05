@@ -48,8 +48,8 @@ export function createSearchServer(arg: DocumentStore | ServerDeps): Server {
     if (!authorized(req.headers.authorization)) { send(401, { error: 'UNAUTHORIZED' }, { 'www-authenticate': 'Bearer' }); return; }
     if (url.pathname === '/status') {
       const now = clock();
-      send(200, { apiVersion: API_VERSION, uptimeSec: Math.round((now - started) / 1000), crawling: deps.crawling?.() ?? false, documents: { ...deps.documents.count(), links: deps.documents.linkCount() },
-        ...(deps.frontier ? { frontier: { ...deps.frontier.stats(), ...deps.frontier.detail(now), concentration: deps.frontier.concentration(now), admission: deps.frontier.admission } } : {}), ...(deps.planner ? { demand: deps.planner.stats() } : {}) });
+      send(200, { apiVersion: API_VERSION, generatedAtMs: now, uptimeSec: Math.round((now - started) / 1000), crawling: deps.crawling?.() ?? false, documents: { ...deps.documents.count(), links: deps.documents.linkCount() },
+        ...(deps.frontier ? { frontier: { ...deps.frontier.stats(), ...deps.frontier.detail(now), concentration: deps.frontier.concentration(now), admission: deps.frontier.admission, operational: deps.frontier.operationalHealth(now) } } : {}), ...(deps.planner ? { demand: deps.planner.stats() } : {}) });
       return;
     }
     const q = url.searchParams.get('q') ?? '';

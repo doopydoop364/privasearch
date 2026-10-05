@@ -34,7 +34,7 @@ Each domain has a virtual time `vtime`. A served domain's `vtime` advances by `1
 - A domain with weight 1.0 is served about twice as often as one with weight 0.5; raw URL count buys nothing.
 - A domain that sat idle cannot bank credit (`max(vtime, vmin)`), and a new domain starts at the front of the schedule.
 - Only a domain that is actually served is charged. A domain waiting out a politeness delay is neither considered nor penalised, so a single-host site is not punished for being polite.
-- Slots are split 70 % exploit (smallest `vtime`), 20 % explore (young domains with under 5 pages) and 10 % wildcard (a golden-ratio position in the `vtime` range, so a long tail is touched without randomness).
+- Slots are split 70 % exploit (smallest `vtime`), 20 % explore (young domains with under 5 leases) and 10 % wildcard (a golden-ratio position in the `vtime` range, so a long tail is touched without randomness).
 - Explicit **demand** is leased first, ahead of the fair queue, but still obeys politeness, the domain concurrency cap (2) and the family cap (4).
 - Recrawls take a configurable share of each lease (`PRIVASEARCH_RECRAWL_SHARE`) and are spread: the most overdue URL of every domain before a second URL of any domain. A demand re-ask also refreshes a page that has not been fetched within the recrawl cooldown.
 

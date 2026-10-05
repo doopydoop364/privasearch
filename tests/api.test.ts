@@ -90,7 +90,7 @@ test('/status reports counters for operators and never URLs or queries; /health 
   const s = await serve(t);
   s.documents.upsert(doc('https://a.example/secret-looking-path', 'T', 'text')); await s.get('/search?q=very%20secret%20query');
   const status = (await s.get('/status')).body;
-  assert.deepEqual(Object.keys(status).sort(), ['apiVersion', 'crawling', 'demand', 'documents', 'frontier', 'uptimeSec']);
+  assert.deepEqual(Object.keys(status).sort(), ['apiVersion', 'crawling', 'demand', 'documents', 'frontier', 'generatedAtMs', 'uptimeSec']);
   assert.equal(status.demand.queries, 1); assert.equal(status.frontier.pendingDemand, 1); assert.equal(status.documents.documents, 1);
   const text = JSON.stringify(status); assert.equal(text.includes('secret'), false);
   const health = (await s.get('/health')).body; assert.deepEqual([health.status, health.version, health.crawling, health.documents], ['ok', '0.4.0-test', true, 1]);

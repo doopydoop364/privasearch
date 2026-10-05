@@ -1,5 +1,7 @@
 # Search API
 
+`/status` additionally reports `generatedAtMs`, `frontier.operational` (outcomes, hourly throughput, queue/retry age and bounded low-yield summaries), and configured-family/useful-page concentration. Operational aggregates are cached for 60 seconds and include their sample timestamp; retry ages unknown before upgrade remain unknown. These are indexing proxies, not judged ranking quality. See [crawler audit](crawler-health-audit.md).
+
 PrivaSearch serves a small, stable JSON API over HTTP. It is meant for another server (PrivaProxy's server calls it; a browser should not). `apiVersion` is `1`; within version 1 changes are additive.
 
 - JSON only, `GET` only, no cookies, no user identifiers, no logging of queries.
