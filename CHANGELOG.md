@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `/status` and `/health` report `schemaVersion`; `/status` also reports `version`, so a monitor can identify the running build without log access.
+- `frontier.operational.suppressed`: domains in persistent cooldown, their retained pending rows, and hosts in failure backoff (cached with the existing 60 s aggregation).
+
+### Changed
+- A robots failure that is a refused redirect (node `PROTOCOL` with a 3xx status) is counted as `PROTOCOL_REDIRECT` instead of merging with oversize/undecodable files.
+
 ## [0.5.1] - 2026-10-05
 
 ### Fixed

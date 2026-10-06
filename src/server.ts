@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import { DocumentStore } from './documents.js';
+import { SCHEMA_VERSION } from './db.js';
 import type { DemandPlanner, CrawlInfo } from './demand.js';
 import type { Frontier } from './frontier.js';
 import { Searcher } from './ranking.js';
@@ -43,12 +44,12 @@ export function createSearchServer(arg: DocumentStore | ServerDeps): Server {
     };
     if (req.method !== 'GET') { send(405, { error: 'METHOD_NOT_ALLOWED' }); return; }
     let url: URL; try { url = new URL(req.url ?? '/', 'http://localhost'); } catch { send(400, { error: 'BAD_REQUEST' }); return; }
-    if (url.pathname === '/health') { send(200, { status: 'ok', apiVersion: API_VERSION, ...(deps.version ? { version: deps.version } : {}), ...deps.documents.count(), crawling: deps.crawling?.() ?? false }); return; }
+    if (url.pathname === '/health') { send(200, { status: 'ok', apiVersion: API_VERSION, ...(deps.version ? { version: deps.version } : {}), schemaVersion: SCHEMA_VERSION, ...deps.documents.count(), crawling: deps.crawling?.() ?? false }); return; }
     if (url.pathname !== '/search' && url.pathname !== '/status') { send(404, { error: 'NOT_FOUND' }); return; }
     if (!authorized(req.headers.authorization)) { send(401, { error: 'UNAUTHORIZED' }, { 'www-authenticate': 'Bearer' }); return; }
     if (url.pathname === '/status') {
       const now = clock();
-      send(200, { apiVersion: API_VERSION, generatedAtMs: now, uptimeSec: Math.round((now - started) / 1000), crawling: deps.crawling?.() ?? false, documents: { ...deps.documents.count(), links: deps.documents.linkCount() },
+      send(200, { apiVersion: API_VERSION, generatedAtMs: now, ...(deps.version ? { version: deps.version } : {}), schemaVersion: SCHEMA_VERSION, uptimeSec: Math.round((now - started) / 1000), crawling: deps.crawling?.() ?? false, documents: { ...deps.documents.count(), links: deps.documents.linkCount() },
         ...(deps.frontier ? { frontier: { ...deps.frontier.stats(), ...deps.frontier.detail(now), concentration: deps.frontier.concentration(now), admission: deps.frontier.admission, operational: deps.frontier.operationalHealth(now) } } : {}), ...(deps.planner ? { demand: deps.planner.stats() } : {}) });
       return;
     }

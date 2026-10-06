@@ -54,7 +54,7 @@ export interface OperationalHealth {
   sampledAtMs: number; cacheMs: number; metricsSinceMs: number;
   queues: Array<Record<string, unknown>>;
   lowYield: Array<Record<string, unknown>>; lowYieldTotals: Record<string, unknown> | undefined; zeroYieldTotals: Record<string, unknown> | undefined;
-  quality: Record<string, unknown> | undefined; outcomes: Array<Record<string, unknown>>;
+  quality: Record<string, unknown> | undefined; suppressed: { cooldownDomains: number; cooldownPending: number; backedOffHosts: number }; outcomes: Array<Record<string, unknown>>;
   throughput: { window: string; rows: Array<Record<string, unknown>> }; limitations: string[];
 }
 export interface AddOptions { queue: Queue; priority?: number; depth?: number; source?: Source; external?: boolean; relevant?: boolean }
@@ -66,6 +66,12 @@ export type Source = UrlSource;
 export interface UrlRow { url_key: string; url: string; host: string; queue: Queue; priority: number; state: State; generation: number; attempts: number; next_at: number; depth: number; last_outcome: string | null; last_http: number | null; etag: string | null; last_modified: string | null; content_sha256: string | null; fetched_at: number | null; leased_at: number | null; interval_ms: number | null; change_count: number; unchanged_streak: number; last_changed_at: number | null; domain: string | null; source: Source; external: number }
 
 const DAY = 86400000;
+/** The error bucket recorded for one result. A robots PROTOCOL failure that still carries a 3xx status is a refused redirect, which the node's single PROTOCOL code would otherwise merge with oversize or undecodable files. */
+export function errorLabel(result: Pick<FetchResult, 'outcome' | 'error' | 'httpStatus'>): string {
+  const redirect = result.httpStatus !== undefined && result.httpStatus >= 300 && result.httpStatus < 400;
+  if (result.outcome === 'ROBOTS_UNAVAILABLE' && result.error?.code === 'PROTOCOL' && redirect) return 'PROTOCOL_REDIRECT';
+  return result.error?.code ?? (result.outcome === 'ROBOTS_UNAVAILABLE' ? (result.httpStatus === undefined ? 'UNKNOWN' : `HTTP_${result.httpStatus}`) : '');
+}
 const HOUR = 3600000;
 
 export class Frontier {
@@ -337,7 +343,7 @@ export class Frontier {
   complete(key: string, result: FetchResult, now: number): void {
     this.transaction(() => {
       const row = this.db.prepare('SELECT host, queue, priority, depth, content_sha256, interval_ms, source FROM urls WHERE url_key=?').get(key) as { host: string; queue: Queue; priority: number; depth: number; content_sha256: string | null; interval_ms: number | null; source: Source } | undefined; if (!row) return;
-      this.noteOutcome(row.queue, result.outcome, result.error?.code ?? (result.outcome === 'ROBOTS_UNAVAILABLE' ? (result.httpStatus === undefined ? 'UNKNOWN' : `HTTP_${result.httpStatus}`) : ''), now);
+      this.noteOutcome(row.queue, result.outcome, errorLabel(result), now);
       const delay = Math.max(this.o.hostDelayMs, (result.robots.crawlDelaySec ?? 0) * 1000);
       // Requesting a host, whatever came back, spends its politeness budget; a success clears its failure streak.
       this.db.prepare(`INSERT INTO hosts (host, next_allowed_at) VALUES (?,?) ON CONFLICT(host) DO UPDATE SET next_allowed_at=MAX(next_allowed_at, excluded.next_allowed_at)`).run(row.host, now + delay);
@@ -457,7 +463,11 @@ export class Frontier {
     const zeroYieldTotals = this.db.prepare(`SELECT COUNT(*) AS domains, COALESCE(SUM(pending),0) AS pending FROM domains WHERE pending>0 AND leased>=8 AND useful=0`).get();
     const throughput = this.db.prepare(`SELECT queue, SUM(answers) AS answers, SUM(fetched) AS fetched, SUM(fetched)/60.0 AS fetchedPerMinute FROM crawl_hours WHERE hour>=? AND hour<? GROUP BY queue`).all(Math.floor(now / HOUR) - 1, Math.floor(now / HOUR));
     const quality = this.db.prepare(`SELECT COALESCE(SUM(fetched),0) AS fetched, COALESCE(SUM(useful),0) AS useful, COALESCE(SUM(duplicates),0) AS duplicates, COALESCE(SUM(low_value),0) AS lowValue, COALESCE(SUM(errors),0) AS errors FROM domains`).get();
-    const value = { sampledAtMs: now, cacheMs: 60000, metricsSinceMs: Number(this.db.prepare("SELECT v FROM meta WHERE k='crawl_metrics_since'").get()?.v ?? now), queues, lowYield, lowYieldTotals, zeroYieldTotals, quality,
+    // Suppression is a state, not a deletion: domains in persistent cooldown (their pending rows are retained but not selected for PUBLIC work) and hosts inside failure backoff.
+    const cooling = this.db.prepare('SELECT COUNT(*) AS domains, COALESCE(SUM(d.pending),0) AS pending FROM crawl_health c LEFT JOIN domains d ON d.domain=c.domain WHERE c.cooldown_until>?').get(now) as { domains: number; pending: number };
+    const backedOff = this.db.prepare('SELECT COUNT(*) AS n FROM hosts WHERE backoff_until>?').get(now) as { n: number };
+    const suppressed = { cooldownDomains: Number(cooling.domains), cooldownPending: Number(cooling.pending), backedOffHosts: Number(backedOff.n) };
+    const value = { sampledAtMs: now, cacheMs: 60000, metricsSinceMs: Number(this.db.prepare("SELECT v FROM meta WHERE k='crawl_metrics_since'").get()?.v ?? now), queues, lowYield, lowYieldTotals, zeroYieldTotals, quality, suppressed,
       outcomes: this.db.prepare('SELECT queue,outcome,error,n FROM crawl_outcomes ORDER BY queue,outcome,error').all(),
       throughput: { window: 'previous_complete_utc_hour', rows: throughput },
       limitations: ['Outcome counters begin at deployment; fetched/useful counters count samples, including recrawls.', 'Retry age begins at the first observed failure; pre-upgrade retries have unknown age. urlDue does not imply host/domain readiness.', 'Useful yield is an indexing proxy, not judged search relevance. Families require operator configuration.'] };

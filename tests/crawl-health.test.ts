@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDatabase } from '../src/db.js';
-import { Frontier } from '../src/frontier.js';
+import { Frontier, errorLabel } from '../src/frontier.js';
 import { outcomeResult, pageResult } from '../src/privanet/fake-transport.js';
 import { rig } from './helpers.js';
 import { zeroYieldSimulation } from './sim/zero-yield.js';
@@ -130,4 +130,34 @@ test('cooldown, outcome counters and lease generations survive reopening and rol
     assert.equal(f.operationalHealth(now).outcomes[0]?.n, 8);
     assert.equal(db.prepare('PRAGMA user_version').get()?.user_version, 4);
   } finally { db.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('robots failure causes keep a refused redirect apart from other PROTOCOL failures, and the buckets reach the status counters', () => {
+  assert.equal(errorLabel({ outcome: 'ROBOTS_UNAVAILABLE', error: { code: 'PROTOCOL', retryable: false }, httpStatus: 302 }), 'PROTOCOL_REDIRECT');
+  assert.equal(errorLabel({ outcome: 'ROBOTS_UNAVAILABLE', error: { code: 'PROTOCOL', retryable: false } }), 'PROTOCOL');
+  assert.equal(errorLabel({ outcome: 'ROBOTS_UNAVAILABLE', error: { code: 'TLS', retryable: false }, httpStatus: 302 }), 'TLS');
+  assert.equal(errorLabel({ outcome: 'ROBOTS_UNAVAILABLE', httpStatus: 503 }), 'HTTP_503');
+  assert.equal(errorLabel({ outcome: 'ROBOTS_UNAVAILABLE' }), 'UNKNOWN');
+  assert.equal(errorLabel({ outcome: 'FETCH_FAILED', error: { code: 'DNS', retryable: true } }), 'DNS');
+  assert.equal(errorLabel({ outcome: 'HTTP_ERROR', httpStatus: 500 }), '');
+  const r = rig(never, { hostDelayMs: 0 });
+  try {
+    r.frontier.add('https://apex.test/a', { queue: 'PUBLIC' }, r.time.now);
+    const [l] = r.frontier.lease(r.time.now, 1); assert.ok(l);
+    r.frontier.complete(l.urlKey, outcomeResult('ROBOTS_UNAVAILABLE', l.url, r.time.now, { robots: { verdict: 'UNAVAILABLE' }, httpStatus: 301, error: { code: 'PROTOCOL', retryable: false } }), r.time.now);
+    assert.deepEqual(r.frontier.operationalHealth(r.time.now).outcomes.map(o => [o.outcome, o.error, o.n]), [['ROBOTS_UNAVAILABLE', 'PROTOCOL_REDIRECT', 1]]);
+  } finally { r.db.close(); }
+});
+
+test('status counts domains in cooldown and hosts in backoff without scanning URLs, and a clean frontier reports zero', () => {
+  const r = rig(never, { hostDelayMs: 0, backoffBaseMs: 600000 });
+  try {
+    assert.deepEqual(r.frontier.operationalHealth(r.time.now).suppressed, { cooldownDomains: 0, cooldownPending: 0, backedOffHosts: 0 });
+    for (let i = 0; i < 12; i++) r.frontier.add(`https://h${i}.bad.test/a`, { queue: 'PUBLIC' }, r.time.now);
+    for (let i = 0; i < 8; i++) { const [l] = r.frontier.lease(r.time.now, 1); assert.ok(l); r.frontier.complete(l.urlKey, outcomeResult('ROBOTS_DISALLOWED', l.url, r.time.now), r.time.now); }
+    r.advance(60001); // the status aggregation is cached for 60 s
+    const s = r.frontier.operationalHealth(r.time.now).suppressed;
+    assert.ok(s.cooldownDomains >= 1 && s.cooldownPending >= 1, JSON.stringify(s));
+    assert.equal(Number.isInteger(s.backedOffHosts), true);
+  } finally { r.db.close(); }
 });
